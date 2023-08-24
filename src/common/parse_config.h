@@ -295,9 +295,13 @@ typedef struct conf_file_options {
 		       const char *line, char **leftover);
 	void (*destroy)(void *data);
 	struct conf_file_options* line_options;
+	void (*pack)(void *data, buf_t *buffer);
+	void *(*unpack)(buf_t *buffer);
 } s_p_options_t;
 
 
+s_p_hashtbl_t *s_p_hashtbl_create_cnt(const struct conf_file_options options[],
+				      int *cnt);
 s_p_hashtbl_t *s_p_hashtbl_create(const struct conf_file_options options[]);
 void s_p_hashtbl_destroy(s_p_hashtbl_t *hashtbl);
 
@@ -306,9 +310,12 @@ void s_p_hashtbl_destroy(s_p_hashtbl_t *hashtbl);
  *                of file.
  * IN ignore_new - do not treat unrecognized keywords as a fatal error,
  *                 print debug() message and continue
+ * OUT last_ancestor - last ancestor configuration filename used to map nested
+ * 		       Include files in configless configurations.
  */
 int s_p_parse_file(s_p_hashtbl_t *hashtbl, uint32_t *hash_val, char *filename,
-		   bool ignore_new);
+		   bool ignore_new, char *last_ancestor,
+		   bool check_permissions);
 
 /* Returns SLURM_SUCCESS if buffer was opened and parse correctly.
  * buffer must be a valid buf_t buffer only containing strings. The parsing
@@ -636,6 +643,8 @@ extern buf_t *s_p_pack_hashtbl(const s_p_hashtbl_t *hashtbl,
 /*
  * Given a buffer, unpack key, type, op and value into a hashtbl.
  */
+extern s_p_hashtbl_t *s_p_unpack_hashtbl_full(buf_t *buffer,
+					      const s_p_options_t options[]);
 extern s_p_hashtbl_t *s_p_unpack_hashtbl(buf_t *buffer);
 
 /*

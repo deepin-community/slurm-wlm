@@ -43,7 +43,7 @@
 
 #include "src/common/data.h"
 #include "src/common/log.h"
-#include "src/common/openapi.h"
+#include "src/interfaces/openapi.h"
 #include "src/common/ref.h"
 #include "src/common/xassert.h"
 #include "src/common/xmalloc.h"
@@ -160,7 +160,7 @@ extern int resp_error(data_t *errors, int error_code, const char *source,
 	return error_code;
 }
 
-extern data_t *slurm_openapi_p_get_specification(void)
+extern data_t *slurm_openapi_p_get_specification(openapi_spec_flags_t *flags)
 {
 	data_t *spec = NULL;
 

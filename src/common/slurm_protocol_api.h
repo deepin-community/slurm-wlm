@@ -49,6 +49,7 @@
 #include "slurm/slurm_errno.h"
 
 #include "src/common/pack.h"
+#include "src/interfaces/auth.h"
 #include "src/common/slurm_protocol_common.h"
 #include "src/common/slurm_protocol_defs.h"
 #include "src/common/slurm_protocol_util.h"
@@ -122,12 +123,6 @@ extern uint16_t slurm_get_track_wckey(void);
  * returns true if operating with slurmdbd
  */
 bool slurm_with_slurmdbd(void);
-
-/* slurm_get_keep_alive_time
- * returns keep_alive_time slurm_conf object
- * RET uint16_t        - keep_alive_time
- */
-uint16_t slurm_get_keep_alive_time(void);
 
 /* slurm_get_preempt_type
  * get PreemptType from slurm_conf object
@@ -218,6 +213,11 @@ extern int slurm_init_msg_engine_ports(uint16_t *);
 
 /*
  * bind() and then listen() to any port in a given range of ports
+ *
+ * IN: s - socket
+ * IN: port - port number to attempt to bind
+ * IN: local - only bind to localhost if true
+ * OUT: port was bound successfully or -1 on failure
  */
 extern int sock_bind_listen_range(int s, uint16_t *range, bool local);
 
@@ -282,7 +282,7 @@ int slurm_receive_msg(int fd, slurm_msg_t *msg, int timeout);
  *                errno set.
  */
 List slurm_receive_msgs(int fd, int steps, int timeout);
-List slurm_receive_resp_msgs(int fd, int steps, int timeout);
+extern List slurm_receive_resp_msgs(int fd, int steps, int timeout);
 
 /*
  *  Receive a slurm message on the open slurm descriptor "fd". This will also
@@ -402,25 +402,6 @@ extern int slurm_get_peer_addr(int fd, slurm_addr_t * slurm_address);
  * slurm_addr_t pack routines
 \**********************************************************************/
 
-/* slurm_pack_slurm_addr_array
- * packs an array of slurm_addrs into a buffer (pre-20.11 protocol)
- * OUT slurm_address	- slurm_addr_t to pack
- * IN size_val  	- how many to pack
- * IN/OUT buffer	- buffer to pack the slurm_addr_t from
- * returns		- Slurm error code
- */
-extern void slurm_pack_slurm_addr_array(slurm_addr_t *slurm_address,
-					uint32_t size_val, buf_t *buffer);
-/* slurm_unpack_slurm_addr_array
- * unpacks an array of slurm_addrs from a buffer (pre-20.11 protocol)
- * OUT slurm_address	- slurm_addr_t to unpack to
- * IN size_val  	- how many to unpack
- * IN/OUT buffer	- buffer to upack the slurm_addr_t from
- * returns		- Slurm error code
- */
-extern int slurm_unpack_slurm_addr_array(slurm_addr_t **slurm_address,
-					 uint32_t *size_val, buf_t *buffer);
-
 /* slurm_pack_addr_array
  * packs an array of slurm_addrs into a buffer
  * OUT addr_array	- slurm_addr_t[] to pack
@@ -442,19 +423,29 @@ extern int slurm_unpack_addr_array(slurm_addr_t **addr_array_ptr,
 				   uint32_t *size_val, buf_t *buffer);
 
 /**********************************************************************\
+ * message packing routines
+\**********************************************************************/
+
+/*
+ * Pack message into buffers to be ready to send.
+ *
+ * IN msg - message to pack
+ * IN buffers - buffers to populate with packed message
+ * IN block_for_forwarding - call the forward_wait() which blocks until
+ *    forwarding
+ * RET SLURM_SUCCESS or error
+ */
+extern int slurm_buffers_pack_msg(slurm_msg_t *msg, msg_bufs_t *buffers,
+				  bool block_for_forwarding);
+
+/**********************************************************************\
  * simplified communication routines
  * They open a connection do work then close the connection all within
  * the function
 \**********************************************************************/
 
-/* slurm_send_msg
- * given the original request message this function sends a
- *	arbitrary message back to the client that made the request
- * IN request_msg	- slurm_msg the request msg
- * IN msg_type          - message type being returned
- * IN resp_msg		- the message being returned to the client
- */
-int slurm_send_msg(slurm_msg_t *msg, uint16_t msg_type, void *resp);
+extern void response_init(slurm_msg_t *resp_msg, slurm_msg_t *msg,
+			  uint16_t msg_type, void *data);
 
 /* slurm_send_rc_msg
  * given the original request message this function sends a

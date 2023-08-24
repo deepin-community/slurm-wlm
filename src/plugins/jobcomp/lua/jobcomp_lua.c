@@ -45,7 +45,8 @@
 
 #include "slurm/slurm_errno.h"
 
-#include "src/common/slurm_jobcomp.h"
+#include "src/common/slurm_xlator.h"
+#include "src/interfaces/jobcomp.h"
 #include "src/lua/slurm_lua.h"
 #include "src/slurmctld/slurmctld.h"
 
@@ -188,7 +189,7 @@ extern int fini(void)
  * logging API.
  */
 
-extern int jobcomp_p_set_location(char *location)
+extern int jobcomp_p_set_location(void)
 {
 	return SLURM_SUCCESS;
 }
@@ -236,9 +237,4 @@ out:	slurm_mutex_unlock(&lua_lock);
 extern List jobcomp_p_get_jobs(void *job_cond)
 {
 	return NULL;
-}
-
-extern int jobcomp_p_archive(void *arch_cond)
-{
-	return SLURM_SUCCESS;
 }

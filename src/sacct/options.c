@@ -44,6 +44,8 @@
 #include "src/common/read_config.h"
 #include "src/common/slurm_time.h"
 #include "src/common/xstring.h"
+#include "src/interfaces/data_parser.h"
+#include "src/interfaces/serializer.h"
 #include "sacct.h"
 #include <time.h>
 
@@ -59,6 +61,8 @@
 #define OPT_LONG_ENV       0x108
 #define OPT_LONG_JSON      0x109
 #define OPT_LONG_YAML      0x110
+#define OPT_LONG_AUTOCOMP  0x111
+#define OPT_LONG_ARRAY     0x112
 
 #define JOB_HASH_SIZE 1000
 
@@ -108,94 +112,35 @@ static void _help_fields_msg(void)
 }
 
 /* returns number of objects added to list */
+static int _addto_reason_char_list_internal(List char_list, char *name, void *x)
+{
+	uint32_t c;
+	char *tmp_name = NULL;
+
+	c = job_reason_num(name);
+	if (c == NO_VAL)
+		fatal("unrecognized job reason value '%s'", name);
+	tmp_name = xstrdup_printf("%u", c);
+
+	if (!list_find_first(char_list, slurm_find_char_in_list, tmp_name)) {
+		list_append(char_list, tmp_name);
+		return 1;
+	} else {
+		xfree(tmp_name);
+		return 0;
+	}
+}
+
+/* returns number of objects added to list */
 static int _addto_reason_char_list(List char_list, char *names)
 {
-	int i = 0, start = 0;
-	uint32_t c;
-	char *name = NULL, *tmp_char = NULL;
-	ListIterator itr = NULL;
-	char quote_c = '\0';
-	int quote = 0;
-	int count = 0;
-
 	if (!char_list) {
 		error("No list was given to fill in");
 		return 0;
 	}
 
-	itr = list_iterator_create(char_list);
-	if (names) {
-		if (names[i] == '\"' || names[i] == '\'') {
-			quote_c = names[i];
-			quote = 1;
-			i++;
-		}
-		start = i;
-		while (names[i]) {
-			//info("got %d - %d = %d", i, start, i-start);
-			if (quote && names[i] == quote_c)
-				break;
-			else if (names[i] == '\"' || names[i] == '\'')
-				names[i] = '`';
-			else if (names[i] == ',') {
-				if ((i-start) > 0) {
-					name = xmalloc((i-start+1));
-					memcpy(name, names+start, (i-start));
-					c = job_reason_num(name);
-					if (c == NO_VAL)
-						fatal("unrecognized job reason value %s",
-						      name);
-					xfree(name);
-					name = xstrdup_printf("%u", c);
-
-					while ((tmp_char = list_next(itr))) {
-						if (!xstrcasecmp(tmp_char,
-								 name))
-							break;
-					}
-
-					if (!tmp_char) {
-						list_append(char_list, name);
-						count++;
-					} else
-						xfree(name);
-					list_iterator_reset(itr);
-				}
-				i++;
-				start = i;
-				if (names[i] == ' ') {
-					info("There is a problem with "
-					     "your request.  It appears you "
-					     "have spaces inside your list.");
-					break;
-				}
-			}
-			i++;
-		}
-		if ((i-start) > 0) {
-			name = xmalloc((i-start)+1);
-			memcpy(name, names+start, (i-start));
-			c = job_reason_num(name);
-			if (c == NO_VAL)
-				fatal("unrecognized job reason value '%s'",
-				      name);
-			xfree(name);
-			name = xstrdup_printf("%u", c);
-
-			while ((tmp_char = list_next(itr))) {
-				if (!xstrcasecmp(tmp_char, name))
-					break;
-			}
-
-			if (!tmp_char) {
-				list_append(char_list, name);
-				count++;
-			} else
-				xfree(name);
-		}
-	}
-	list_iterator_destroy(itr);
-	return count;
+	return slurm_parse_char_list(char_list, names, NULL,
+				     _addto_reason_char_list_internal);
 }
 
 static bool _supported_state(uint32_t state_num)
@@ -225,99 +170,38 @@ static bool _supported_state(uint32_t state_num)
 	}
 }
 
+static int _addto_state_char_list_internal(List char_list, char *name, void *x)
+{
+	uint32_t c;
+	char *tmp_name = NULL;
+
+	c = job_state_num(name);
+	if (c == NO_VAL)
+		fatal("unrecognized job state value '%s'", name);
+	if (!_supported_state(c))
+		fatal("job state %s is not supported / accounted", name);
+	tmp_name = xstrdup_printf("%d", c);
+
+	if (!list_find_first(char_list, slurm_find_char_in_list, tmp_name)) {
+		list_append(char_list, tmp_name);
+		return 1;
+	} else {
+		xfree(tmp_name);
+		return 0;
+	}
+}
+
 /* returns number of objects added to list */
 /* also checks if states are supported by sacct and fatals if not */
 static int _addto_state_char_list(List char_list, char *names)
 {
-	int i = 0, start = 0;
-	uint32_t c;
-	char *name = NULL, *tmp_char = NULL;
-	ListIterator itr = NULL;
-	char quote_c = '\0';
-	int quote = 0;
-	int count = 0;
-
 	if (!char_list) {
 		error("No list was given to fill in");
 		return 0;
 	}
 
-	itr = list_iterator_create(char_list);
-	if (names) {
-		if (names[i] == '\"' || names[i] == '\'') {
-			quote_c = names[i];
-			quote = 1;
-			i++;
-		}
-		start = i;
-		while (names[i]) {
-			//info("got %d - %d = %d", i, start, i-start);
-			if (quote && names[i] == quote_c)
-				break;
-			else if (names[i] == '\"' || names[i] == '\'')
-				names[i] = '`';
-			else if (names[i] == ',') {
-				if ((i-start) > 0) {
-					name = xmalloc((i-start+1));
-					memcpy(name, names+start, (i-start));
-					c = job_state_num(name);
-					if (c == NO_VAL)
-						fatal("unrecognized job state value %s", name);
-					if (!_supported_state(c))
-						fatal("job state %s is not supported / accounted", name);
-					xfree(name);
-					name = xstrdup_printf("%d", c);
-
-					while ((tmp_char = list_next(itr))) {
-						if (!xstrcasecmp(tmp_char,
-								 name))
-							break;
-					}
-
-					if (!tmp_char) {
-						list_append(char_list, name);
-						count++;
-					} else
-						xfree(name);
-					list_iterator_reset(itr);
-				}
-				i++;
-				start = i;
-				if (names[i] == ' ') {
-					info("There is a problem with "
-					     "your request.  It appears you "
-					     "have spaces inside your list.");
-					break;
-				}
-			}
-			i++;
-		}
-		if ((i-start) > 0) {
-			name = xmalloc((i-start)+1);
-			memcpy(name, names+start, (i-start));
-			c = job_state_num(name);
-			if (c == NO_VAL)
-				fatal("unrecognized job state value '%s'",
-				      name);
-			if (!_supported_state(c))
-				fatal("job state %s is not supported / accounted", name);
-			xfree(name);
-			name = xstrdup_printf("%d", c);
-
-			while ((tmp_char = list_next(itr))) {
-				if (!xstrcasecmp(tmp_char, name))
-					break;
-			}
-
-			if (!tmp_char) {
-				list_append(char_list, name);
-				count++;
-			} else
-				xfree(name);
-		}
-	}
-	list_iterator_destroy(itr);
-	return count;
+	return slurm_parse_char_list(char_list, names, NULL,
+				     _addto_state_char_list_internal);
 }
 
 static void _help_msg(void)
@@ -332,6 +216,9 @@ sacct [<OPTION>]                                                            \n \
      -A, --accounts:                                                        \n\
 	           Use this comma separated list of accounts to select jobs \n\
                    to display.  By default, all accounts are selected.      \n\
+     --array:                                                               \n\
+                   Expand job arrays. Display array tasks on separate lines \n\
+                   instead of consolidating them to a single line.          \n\
      -b, --brief:                                                           \n\
 	           Equivalent to '--format=jobstep,state,error'.            \n\
      -B, --batch-script:                                                    \n\
@@ -624,7 +511,6 @@ extern int get_data(void)
 	ListIterator itr_step = NULL;
 	slurmdb_job_cond_t *job_cond = params.job_cond;
 	int cnt;
-	char *tmp_usage;
 
 	if (params.opt_completion) {
 		jobs = slurmdb_jobcomp_jobs_get(job_cond);
@@ -671,21 +557,7 @@ extern int get_data(void)
 				step->sys_cpu_sec;
 			job->sys_cpu_usec +=
 				step->sys_cpu_usec;
-
-			/* get the max for all the sacct_t struct */
-			aggregate_stats(&job->stats, &step->stats);
 		}
-
-		/* Now figure out the average of the total of averages */
-		tmp_usage = job->stats.tres_usage_in_ave;
-		job->stats.tres_usage_in_ave =
-			slurmdb_ave_tres_usage(tmp_usage, cnt);
-		xfree(tmp_usage);
-		tmp_usage = job->stats.tres_usage_out_ave;
-		job->stats.tres_usage_out_ave =
-			slurmdb_ave_tres_usage(tmp_usage, cnt);
-		xfree(tmp_usage);
-
 		list_iterator_destroy(itr_step);
 	}
 	list_iterator_destroy(itr);
@@ -713,9 +585,11 @@ extern void parse_command_line(int argc, char **argv)
 	bool set;
 
 	static struct option long_options[] = {
+		{"autocomplete", required_argument, 0, OPT_LONG_AUTOCOMP},
                 {"allusers",       no_argument,       0,    'a'},
                 {"accounts",       required_argument, 0,    'A'},
                 {"allocations",    no_argument,       0,    'X'},
+                {"array",          no_argument,       0,    OPT_LONG_ARRAY},
                 {"brief",          no_argument,       0,    'b'},
 		{"batch-script",   no_argument,       0,    'B'},
                 {"completion",     no_argument,       0,    'c'},
@@ -800,6 +674,9 @@ extern void parse_command_line(int argc, char **argv)
 				job_cond->acct_list = list_create(xfree_ptr);
 			slurm_addto_char_list(job_cond->acct_list, optarg);
 			break;
+		case OPT_LONG_ARRAY:
+			params.opt_array = true;
+			break;
 		case 'b':
 			brief_output = true;
 			break;
@@ -856,6 +733,7 @@ extern void parse_command_line(int argc, char **argv)
 				exit(1);
 			}
 			slurm_conf.job_comp_loc = xstrdup(optarg);
+			params.opt_completion = 1;
 			break;
 		case 'F':
 			job_cond->db_flags = str_2_job_flags(optarg);
@@ -865,8 +743,8 @@ extern void parse_command_line(int argc, char **argv)
 		case 'g':
 			if (!job_cond->groupid_list)
 				job_cond->groupid_list = list_create(xfree_ptr);
-			if (!slurm_addto_id_char_list(job_cond->groupid_list,
-			                              optarg, 1))
+			if (slurm_addto_id_char_list(job_cond->groupid_list,
+						     optarg, 1) < 1)
 				exit(1);
 			break;
 		case 'h':
@@ -1014,8 +892,8 @@ extern void parse_command_line(int argc, char **argv)
 			all_users = false;
 			if (!job_cond->userid_list)
 				job_cond->userid_list = list_create(xfree_ptr);
-			if (!slurm_addto_id_char_list(job_cond->userid_list,
-			                              optarg, 0))
+			if (slurm_addto_id_char_list(job_cond->userid_list,
+						     optarg, 0) < 1)
 				exit(1);
 			break;
 		case OPT_LONG_LOCAL_UID:
@@ -1059,11 +937,17 @@ extern void parse_command_line(int argc, char **argv)
 			break;
 		case OPT_LONG_JSON:
 			params.mimetype = MIME_TYPE_JSON;
-			data_init(MIME_TYPE_JSON_PLUGIN, NULL);
+			data_init();
+			serializer_g_init(MIME_TYPE_JSON_PLUGIN, NULL);
 			break;
 		case OPT_LONG_YAML:
 			params.mimetype = MIME_TYPE_YAML;
-			data_init(MIME_TYPE_YAML_PLUGIN, NULL);
+			data_init();
+			serializer_g_init(MIME_TYPE_YAML_PLUGIN, NULL);
+			break;
+		case OPT_LONG_AUTOCOMP:
+			suggest_completion(long_options, optarg);
+			exit(0);
 			break;
 		case ':':
 		case '?':	/* getopt() has explained it */
@@ -1101,7 +985,7 @@ extern void parse_command_line(int argc, char **argv)
 
 	if (job_cond->usage_end &&
 	    (job_cond->usage_start > job_cond->usage_end)) {
-		char start_str[32], end_str[32];
+		char start_str[256], end_str[256];
 		slurm_make_time_str(&job_cond->usage_start, start_str,
 				    sizeof(start_str));
 		slurm_make_time_str(&job_cond->usage_end, end_str,
@@ -1163,7 +1047,7 @@ extern void parse_command_line(int argc, char **argv)
 	      (job_cond->flags & JOBCOND_FLAG_NO_WHOLE_HETJOB ? "no" : 0));
 
 	if (params.opt_completion) {
-		slurmdb_jobcomp_init(slurm_conf.job_comp_loc);
+		slurmdb_jobcomp_init();
 
 		if (!xstrcmp(slurm_conf.job_comp_type, "jobcomp/none")) {
 			fprintf(stderr, "Slurm job completion is disabled\n");
@@ -1200,8 +1084,8 @@ extern void parse_command_line(int argc, char **argv)
 		if (!job_cond->qos_list)
 			job_cond->qos_list = list_create(xfree_ptr);
 
-		if (!slurmdb_addto_qos_char_list(job_cond->qos_list,
-						g_qos_list, qos_names, 0))
+		if (slurmdb_addto_qos_char_list(job_cond->qos_list,
+						g_qos_list, qos_names, 0) < 1)
 			fatal("problem processing qos list");
 		xfree(qos_names);
 	}
@@ -1437,10 +1321,10 @@ extern void parse_command_line(int argc, char **argv)
 		}
 
 		if (!xstrcasecmp("AllocGRES", start)) {
-			fatal("AllocGRES is deprecated, please use AllocTRES");
+			fatal("AllocGRES has been removed, please use AllocTRES");
 		}
 		if (!xstrcasecmp("ReqGRES", start)) {
-			fatal("ReqGRES is deprecated, please use ReqTRES");
+			fatal("ReqGRES has been removed, please use ReqTRES");
 		}
 		error("Invalid field requested: \"%s\"", start);
 		exit(1);
@@ -1516,13 +1400,19 @@ static void _print_env(slurmdb_job_rec_t *job)
  * At this point, we have already selected the desired data,
  * so we just need to print it for the user.
  */
-extern void do_list(void)
+extern void do_list(int argc, char **argv)
 {
 	ListIterator itr = NULL;
 	ListIterator itr_step = NULL;
 	slurmdb_job_rec_t *job = NULL;
 	slurmdb_step_rec_t *step = NULL;
 	slurmdb_job_cond_t *job_cond = params.job_cond;
+
+	if (params.mimetype) {
+		errno = DATA_DUMP_CLI(JOB_LIST, jobs, "jobs", argc, argv,
+				      acct_db_conn, params.mimetype);
+		return;
+	}
 
 	if (!jobs)
 		return;
@@ -1545,8 +1435,7 @@ extern void do_list(void)
 		if (job->show_full)
 			print_fields(JOB, job);
 
-		if (!(job_cond->flags & JOBCOND_FLAG_NO_STEP)
-		    && (job->track_steps || !job->show_full)) {
+		if (!(job_cond->flags & JOBCOND_FLAG_NO_STEP)) {
 			itr_step = list_iterator_create(job->steps);
 			while ((step = list_next(itr_step))) {
 				if (step->end == 0)

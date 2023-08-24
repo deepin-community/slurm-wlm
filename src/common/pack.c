@@ -98,7 +98,7 @@ strong_alias(unpack32_array,	slurm_unpack32_array);
 strong_alias(packmem,		slurm_packmem);
 strong_alias(unpackmem_ptr,	slurm_unpackmem_ptr);
 strong_alias(unpackmem_xmalloc,	slurm_unpackmem_xmalloc);
-strong_alias(unpackmem_malloc,	slurm_unpackmem_malloc);
+strong_alias(unpackstr_xmalloc, slurm_unpackstr_xmalloc);
 strong_alias(unpackstr_xmalloc_escaped, slurm_unpackstr_xmalloc_escaped);
 strong_alias(unpackstr_xmalloc_chooser, slurm_unpackstr_xmalloc_chooser);
 strong_alias(packstr_array,	slurm_packstr_array);
@@ -230,7 +230,7 @@ void *xfer_buf_data(buf_t *my_buf)
 	xassert(my_buf->magic == BUF_MAGIC);
 
 	if (my_buf->mmaped)
-		fatal_abort("attempt to grow mmap()'d buffer not supported");
+		fatal_abort("attempt to xfer mmap()'d buffer not supported");
 
 	data_ptr = (void *) my_buf->head;
 	xfree(my_buf);
@@ -765,6 +765,32 @@ int unpackbool(bool *valp, buf_t *buffer)
 }
 
 /*
+ * Append the contents of the source buffer into the target buffer while
+ * validating buffer size constraints.
+ */
+extern void packbuf(buf_t *source, buf_t *buffer)
+{
+	uint32_t size_val = get_buf_offset(source);
+
+	if (!size_val)
+		return;
+
+	if (remaining_buf(buffer) < size_val) {
+		if ((buffer->size + size_val) > MAX_BUF_SIZE) {
+			error("%s: Buffer size limit exceeded (%u > %u)",
+			      __func__, (buffer->size + size_val),
+			      MAX_BUF_SIZE);
+			return;
+		}
+		buffer->size += size_val;
+		xrealloc_nz(buffer->head, buffer->size);
+	}
+
+	memcpy(&buffer->head[buffer->processed], get_buf_data(source), size_val);
+	buffer->processed += size_val;
+}
+
+/*
  * Given a pointer to memory (valp) and a size (size_val), convert
  * size_val to network byte order and store at buffer followed by
  * the data at valp. Adjust buffer counters.
@@ -876,10 +902,10 @@ int unpackmem_xmalloc(char **valp, uint32_t *size_valp, buf_t *buffer)
  * specified by valp.  Also return the sizes of 'valp' in bytes.
  * Adjust buffer counters.
  * NOTE: valp is set to point into a newly created buffer,
- *	the caller is responsible for calling free() on *valp
+ *	the caller is responsible for calling xfree() on *valp
  *	if non-NULL (set to NULL on zero size buffer value)
  */
-int unpackmem_malloc(char **valp, uint32_t *size_valp, buf_t *buffer)
+int unpackstr_xmalloc(char **valp, uint32_t *size_valp, buf_t *buffer)
 {
 	uint32_t ns;
 
@@ -894,20 +920,18 @@ int unpackmem_malloc(char **valp, uint32_t *size_valp, buf_t *buffer)
 		error("%s: Buffer to be unpacked is too large (%u > %u)",
 		      __func__, *size_valp, MAX_PACK_MEM_LEN);
 		return SLURM_ERROR;
-	}
-	else if (*size_valp > 0) {
+	} else if (*size_valp > 0) {
 		if (remaining_buf(buffer) < *size_valp)
 			return SLURM_ERROR;
-		*valp = malloc(*size_valp);
-		if (*valp == NULL) {
-			log_oom(__FILE__, __LINE__, __func__);
-			abort();
-		}
+		if (buffer->head[buffer->processed + *size_valp - 1] != '\0')
+			return SLURM_ERROR;
+		*valp = xmalloc_nz(*size_valp);
 		memcpy(*valp, &buffer->head[buffer->processed],
 		       *size_valp);
 		buffer->processed += *size_valp;
 	} else
 		*valp = NULL;
+
 	return SLURM_SUCCESS;
 }
 
@@ -980,7 +1004,7 @@ int unpackstr_xmalloc_chooser(char **valp, uint32_t *size_valp, buf_t *buf)
 	if (slurmdbd_conf)
 		return unpackstr_xmalloc_escaped(valp, size_valp, buf);
 	else
-		return unpackmem_xmalloc(valp, size_valp, buf);
+		return unpackstr_xmalloc(valp, size_valp, buf);
 }
 
 
@@ -1015,12 +1039,12 @@ void packstr_array(char **valp, uint32_t size_val, buf_t *buffer)
 }
 
 /*
- * Given 'buffer' pointing to a network byte order 16-bit integer
- * (size) and a array of strings  store the number of strings in
- * 'size_valp' and the array of strings in valp
- * NOTE: valp is set to point into a newly created buffer,
- *	the caller is responsible for calling xfree on *valp
- *	if non-NULL (set to NULL on zero size buffer value)
+ * Unpack a NULL-terminated array of strings from buffer.
+ * These are stored as a 32-bit (network-byte order) number of elements,
+ * followed by the individual strings (packed with packstr()).
+ * OUT: valp - xmalloc()'d array or NULL. Free with xfree_array().
+ * OUT: size_valp - number of elements, not including the NULL-termination.
+ * IN/OUT: buffer
  */
 int unpackstr_array(char ***valp, uint32_t *size_valp, buf_t *buffer)
 {
@@ -1036,15 +1060,14 @@ int unpackstr_array(char ***valp, uint32_t *size_valp, buf_t *buffer)
 	buffer->processed += sizeof(ns);
 
 	if (*size_valp > 0) {
-		*valp = xmalloc_nz(sizeof(char *) * (*size_valp + 1));
+		*valp = xcalloc(*size_valp + 1, sizeof(char *));
 		for (i = 0; i < *size_valp; i++) {
-			if (unpackmem_xmalloc(&(*valp)[i], &uint32_tmp, buffer))
+			if (unpackstr_xmalloc(&(*valp)[i], &uint32_tmp, buffer)) {
+				*size_valp = 0;
+				xfree_array(*valp);
 				return SLURM_ERROR;
+			}
 		}
-		/*
-		 * NULL terminate array so execle() can detect end of array
-		 */
-		(*valp)[i] = NULL;
 	} else
 		*valp = NULL;
 	return SLURM_SUCCESS;

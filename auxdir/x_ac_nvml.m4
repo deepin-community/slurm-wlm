@@ -14,6 +14,8 @@ AC_DEFUN([X_AC_NVML],
 [
   func_check_path ()
   {
+      AS_UNSET([ac_cv_header_nvml_h])
+      AS_UNSET([ac_cv_lib_nvidia_ml_nvmlInit])
       AC_CHECK_HEADER([nvml.h], [ac_nvml_h=yes], [ac_nvml_h=no])
       AC_CHECK_LIB([nvidia-ml], [nvmlInit], [ac_nvml=yes], [ac_nvml=no])
 
@@ -21,11 +23,18 @@ AC_DEFUN([X_AC_NVML],
           # Check indirectly that CUDA 11.1+ was installed to see if we
 	  # can build NVML MIG code. Do this by checking for the existence of
 	  # gpuInstanceSliceCount in the nvmlDeviceAttributes_t struct.
-	  AC_TRY_LINK([#include <nvml.h>],
-		      [nvmlDeviceAttributes_t attributes;
-		       attributes.gpuInstanceSliceCount = 0;
-		      ],
-		      [ac_mig_support=yes], [ac_mig_support=no])
+	  AC_LINK_IFELSE(
+	      [AC_LANG_PROGRAM(
+		   [[
+		     #include <nvml.h>
+		   ]],
+		   [[
+		     nvmlDeviceAttributes_t attributes;
+		     attributes.gpuInstanceSliceCount = 0;
+		   ]],
+	       )],
+	      [ac_mig_support=yes],
+	      [ac_mig_support=no])
       fi
   }
 
@@ -51,6 +60,10 @@ AC_DEFUN([X_AC_NVML],
           nvml_libs="-lnvidia-ml"
     else
       #try to find libnvml
+      #
+      # NOTE: Just because this is where we are looking and finding the
+      # libraries they must be in the ldcache when running as that is what the
+      # card will be using.
       for d in $_x_ac_nvml_dirs; do
         if [ ! test -d "$d" ]; then
           continue
@@ -63,9 +76,6 @@ AC_DEFUN([X_AC_NVML],
           _x_ac_nvml_cppflags_save="$CPPFLAGS"
           LDFLAGS="-L$d/$bit -lnvidia-ml"
           CPPFLAGS="-I$d/include $CPPFLAGS"
-          $as_unset ac_cv_header_nvml_h
-          $as_unset ac_cv_lib_nvidia_ml_nvmlInit
-          $as_unset ac_cv_lib_nvidia_ml_nvmlVgpuTypeGetGpuInstanceProfileId
 
           func_check_path
 
@@ -73,7 +83,6 @@ AC_DEFUN([X_AC_NVML],
           CPPFLAGS="$_x_ac_nvml_cppflags_save"
           if [ test "$ac_nvml" = "yes" && test "$ac_nvml_h" = "yes" ]; then
             nvml_includes="-I$d/include"
-            nvml_libs="-L$d/$bit -lnvidia-ml"
             break
           fi
         done
@@ -84,7 +93,6 @@ AC_DEFUN([X_AC_NVML],
     fi
 
     if [ test "$ac_nvml" = "yes" && test "$ac_nvml_h" = "yes" ]; then
-      NVML_LIBS="$nvml_libs"
       NVML_CPPFLAGS="$nvml_includes"
       AC_DEFINE(HAVE_NVML, 1, [Define to 1 if NVML library found])
 
@@ -101,7 +109,6 @@ AC_DEFUN([X_AC_NVML],
       fi
     fi
 
-    AC_SUBST(NVML_LIBS)
     AC_SUBST(NVML_CPPFLAGS)
   fi
   AM_CONDITIONAL(BUILD_NVML, test "$ac_nvml" = "yes" && test "$ac_nvml_h" = "yes")

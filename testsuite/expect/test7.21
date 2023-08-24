@@ -168,7 +168,7 @@ expect {
 	}
 }
 if {$matches != 4} {
-	fail "Local (srun) sbatch spank plugin failure ($matches != 2)"
+	fail "Local (srun) sbatch spank plugin failure ($matches != 4)"
 }
 
 spawn $bin_rm $spank_out

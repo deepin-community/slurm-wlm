@@ -81,8 +81,6 @@
 #define	bit_clear_all		slurm_bit_clear_all
 #define	bit_ffc			slurm_bit_ffc
 #define	bit_ffs			slurm_bit_ffs
-#define	bit_free		slurm_bit_free
-#define	bit_realloc		slurm_bit_realloc
 #define	bit_size		slurm_bit_size
 #define	bit_and			slurm_bit_and
 #define	bit_not			slurm_bit_not
@@ -104,6 +102,7 @@
 #define	bit_fmt_binmask		slurm_bit_fmt_binmask
 #define bit_unfmt_binmask	slurm_bit_unfmt_binmask
 #define	bit_fls			slurm_bit_fls
+#define	bit_fls_from_bit	slurm_bit_fls_from_bit
 #define	bit_fill_gaps		slurm_bit_fill_gaps
 #define	bit_super_set		slurm_bit_super_set
 #define	bit_overlap		slurm_bit_overlap
@@ -116,7 +115,6 @@
 #define bit_nffs		slurm_bit_nffs
 #define bit_copybits		slurm_bit_copybits
 #define	bit_get_bit_num		slurm_bit_get_bit_num
-#define	bit_get_pos_num		slurm_bit_get_pos_num
 
 /* fd.[ch] functions */
 #define closeall		slurm_closeall
@@ -180,6 +178,10 @@
 #define	hostset_destroy		slurm_hostset_destroy
 #define	hostset_find		slurm_hostset_find
 #define	hostset_insert		slurm_hostset_insert
+#define hostset_deranged_string_xmalloc \
+				slurm_hostset_deranged_string_xmalloc
+#define hostset_ranged_string_xmalloc \
+				slurm_hostset_ranged_string_xmalloc
 #define	hostset_shift		slurm_hostset_shift
 #define	hostset_shift_range	slurm_hostset_shift_range
 #define	hostset_within		slurm_hostset_within
@@ -193,8 +195,8 @@
 #define gres_get_value_by_type	slurm_gres_get_value_by_type
 #define gres_get_job_info	slurm_gres_get_job_info
 #define gres_get_step_info	slurm_gres_get_step_info
-#define gres_device_major	slurm_gres_device_major
 #define gres_sock_delete	slurm_gres_sock_delete
+#define gres_job_list_delete	slurm_gres_job_list_delete
 #define destroy_gres_device	slurm_destroy_gres_device
 #define destroy_gres_slurmd_conf slurm_destroy_gres_slurmd_conf
 
@@ -208,12 +210,15 @@
 #define	list_append_list	slurm_list_append_list
 #define	list_transfer		slurm_list_transfer
 #define	list_transfer_max	slurm_list_transfer_max
+#define	list_transfer_unique	slurm_list_transfer_unique
 #define	list_prepend		slurm_list_prepend
 #define	list_find_first		slurm_list_find_first
+#define	list_find_first_ro	slurm_list_find_first_ro
 #define	list_delete_all		slurm_list_delete_all
 #define	list_delete_first	slurm_list_delete_first
 #define	list_delete_ptr		slurm_list_delete_ptr
 #define	list_for_each		slurm_list_for_each
+#define	list_for_each_ro	slurm_list_for_each_ro
 #define	list_for_each_max	slurm_list_for_each_max
 #define	list_sort		slurm_list_sort
 #define	list_flip		slurm_list_flip
@@ -241,7 +246,7 @@
 #define	log_fini		slurm_log_fini
 #define	log_alter		slurm_log_alter
 #define	log_alter_with_fp	slurm_log_alter_with_fp
-#define	log_set_fpfx		slurm_log_set_fpfx
+#define	log_set_prefix		slurm_log_set_prefix
 #define	log_fp			slurm_log_fp
 #define	log_oom			slurm_log_oom
 #define	log_has_data		slurm_log_has_data
@@ -267,6 +272,8 @@
 #define build_all_nodeline_info slurm_build_all_nodeline_info
 #define rehash_node		slurm_rehash_node
 #define hostlist2bitmap		slurm_hostlist2bitmap
+#define bitmap2node_name	slurm_bitmap2node_name
+#define find_node_record	slurm_find_node_record
 
 /* pack.[ch] functions */
 #define	create_buf		slurm_create_buf
@@ -300,7 +307,7 @@
 #define	packmem			slurm_packmem
 #define	unpackmem_ptr		slurm_unpackmem_ptr
 #define	unpackmem_xmalloc	slurm_unpackmem_xmalloc
-#define	unpackmem_malloc	slurm_unpackmem_malloc
+#define	unpackstr_xmalloc	slurm_unpackstr_xmalloc
 #define	unpackstr_xmalloc_escaped slurm_unpackstr_xmalloc_escaped
 #define	unpackstr_xmalloc_chooser slurm_unpackstr_xmalloc_chooser
 #define	packstr_array		slurm_packstr_array
@@ -378,6 +385,7 @@
 
 /* xstring.[ch] functions */
 #define	_xstrcat		slurm_xstrcat
+#define	_xstrcatat		slurm_xstrcatat
 #define	_xstrncat		slurm_xstrncat
 #define	_xstrcatchar		slurm_xstrcatchar
 #define	_xstrftimecat		slurm_xstrftimecat
@@ -520,39 +528,14 @@
 #define xfree_struct_passwd		slurm_xfree_struct_passwd
 #define stepd_getgr			slurm_stepd_getgr
 #define xfree_struct_group_array	slurm_xfree_struct_group_array
+#define stepd_gethostbyname		slurm_stepd_gethostbyname
+#define xfree_struct_hostent		slurm_xfree_struct_hostent
 #define stepd_get_namespace_fd		slurm_stepd_get_namespace_fd
 
 /* cgroup.[ch] functions */
 #define cgroup_conf_init		slurm_cgroup_conf_init
 #define cgroup_conf_destroy		slurm_cgroup_conf_destroy
-
+#define autodetect_cgroup_version       slurm_autodetect_cgroup_version
 #endif /* USE_ALIAS */
-
-/* Include the function definitions after redefining their names. */
-#include "src/common/bitstring.h"
-#include "src/common/callerid.h"
-#include "src/common/cgroup.h"
-#include "src/common/eio.h"
-#include "src/common/env.h"
-#include "src/common/hostlist.h"
-#include "src/common/list.h"
-#include "src/common/log.h"
-#include "src/common/macros.h"
-#include "src/common/node_select.h"
-#include "src/common/pack.h"
-#include "src/common/parse_config.h"
-#include "src/common/read_config.h"
-#include "src/common/slurm_auth.h"
-#include "src/common/slurm_jobacct_gather.h"
-#include "src/common/slurm_route.h"
-#include "src/common/slurm_step_layout.h"
-#include "src/common/strlcpy.h"
-#include "src/common/stepd_api.h"
-#include "src/common/switch.h"
-#include "src/common/working_cluster.h"
-#include "src/common/xassert.h"
-#include "src/common/xmalloc.h"
-#include "src/common/xsignal.h"
-#include "src/common/xstring.h"
 
 #endif /*__SLURM_XLATOR_H__*/

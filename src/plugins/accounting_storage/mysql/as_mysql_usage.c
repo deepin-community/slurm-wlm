@@ -96,7 +96,7 @@ static void *_cluster_rollup_usage(void *arg)
 	xassert(rollup_stats);
 
 	memset(&mysql_conn, 0, sizeof(mysql_conn_t));
-	mysql_conn.rollback = 1;
+	mysql_conn.flags |= DB_CONN_FLAG_ROLLBACK;
 	mysql_conn.conn = local_rollup->mysql_conn->conn;
 	slurm_mutex_init(&mysql_conn.lock);
 
@@ -850,7 +850,7 @@ extern int as_mysql_get_usage(mysql_conn_t *mysql_conn, uid_t uid,
 				goto bad_user;
 			}
 
-			/* Existance of user.coord_accts is checked in
+			/* Existence of user.coord_accts is checked in
 			   is_user_any_coord.
 			*/
 			itr = list_iterator_create(user.coord_accts);
@@ -966,4 +966,28 @@ extern int as_mysql_roll_usage(mysql_conn_t *mysql_conn, time_t sent_start,
 	slurm_mutex_unlock(&usage_rollup_lock);
 
 	return rc;
+}
+
+extern bool trigger_reroll(mysql_conn_t *mysql_conn, time_t event_time)
+{
+	slurm_mutex_lock(&rollup_lock);
+	if (event_time < global_last_rollup) {
+		char *query;
+		global_last_rollup = event_time;
+		slurm_mutex_unlock(&rollup_lock);
+
+		query = xstrdup_printf("update \"%s_%s\" set "
+				       "hourly_rollup=%ld, "
+				       "daily_rollup=%ld, monthly_rollup=%ld",
+				       mysql_conn->cluster_name,
+				       last_ran_table, event_time,
+				       event_time, event_time);
+		DB_DEBUG(DB_USAGE, mysql_conn->conn, "query\n%s", query);
+		(void) mysql_db_query(mysql_conn, query);
+		xfree(query);
+		return true;
+	}
+
+	slurm_mutex_unlock(&rollup_lock);
+	return false;
 }

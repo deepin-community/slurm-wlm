@@ -44,8 +44,10 @@
 #include <time.h>
 
 #include "src/common/hostlist.h"
-#include "src/common/node_select.h"
 #include "src/common/read_config.h"
+
+#include "src/interfaces/select.h"
+
 #include "src/slurmctld/agent.h"
 #include "src/slurmctld/front_end.h"
 #include "src/slurmctld/ping_nodes.h"
@@ -260,8 +262,7 @@ void ping_nodes (void)
 		ping_agent_args->node_count++;
 	}
 #else
-	for (i = 0, node_ptr = node_record_table_ptr;
-	     i < node_record_count; i++, node_ptr++) {
+	for (i = 0; (node_ptr = next_node(&i)); i++) {
 		if (IS_NODE_FUTURE(node_ptr) ||
 		    IS_NODE_POWERED_DOWN(node_ptr) ||
 		    IS_NODE_POWERING_DOWN(node_ptr) ||
@@ -300,7 +301,8 @@ void ping_nodes (void)
 		 * once in a while). We limit these requests since they
 		 * can generate a flood of incoming RPCs. */
 		if (IS_NODE_UNKNOWN(node_ptr) || (node_ptr->boot_time == 0) ||
-		    ((i >= offset) && (i < (offset + max_reg_threads)))) {
+		    ((node_ptr->index >= offset) &&
+		     (node_ptr->index < (offset + max_reg_threads)))) {
 			if (reg_agent_args->protocol_version >
 			    node_ptr->protocol_version)
 				reg_agent_args->protocol_version =
@@ -375,13 +377,13 @@ extern void run_health_check(void)
 {
 #ifdef HAVE_FRONT_END
 	front_end_record_t *front_end_ptr;
+	int i;
 #else
 	node_record_t *node_ptr;
 	int node_test_cnt = 0, node_limit, node_states, run_cyclic;
-	static int base_node_loc = -1;
+	static int base_node_loc = 0;
 	static time_t cycle_start_time = (time_t) 0;
 #endif
-	int i;
 	char *host_str = NULL;
 	agent_arg_t *check_agent_args = NULL;
 
@@ -421,7 +423,7 @@ extern void run_health_check(void)
 		time_t now = time(NULL);
 		if (cycle_start_time == (time_t) 0)
 			cycle_start_time = now;
-		else if (base_node_loc >= 0)
+		else if (base_node_loc > 0)
 			;	/* mid-cycle */
 		else if (difftime(now, cycle_start_time) <
 		         slurm_conf.health_check_interval) {
@@ -430,14 +432,9 @@ extern void run_health_check(void)
 		cycle_start_time = now;
 		/* Determine how many nodes we want to test on each call of
 		 * run_health_check() to spread out the work. */
-		node_limit = (node_record_count * 2) /
+		node_limit = (active_node_record_count * 2) /
 		             slurm_conf.health_check_interval;
 		node_limit = MAX(node_limit, 10);
-	}
-	if ((node_states != HEALTH_CHECK_NODE_ANY) &&
-	    (node_states != HEALTH_CHECK_NODE_IDLE)) {
-		/* Update each node's alloc_cpus count */
-		select_g_select_nodeinfo_set_all();
 	}
 
 	check_agent_args = xmalloc (sizeof (agent_arg_t));
@@ -445,19 +442,10 @@ extern void run_health_check(void)
 	check_agent_args->retry = 0;
 	check_agent_args->protocol_version = SLURM_PROTOCOL_VERSION;
 	check_agent_args->hostlist = hostlist_create(NULL);
-	for (i = 0; i < node_record_count; i++) {
-		if (run_cyclic) {
-			if (node_test_cnt++ >= node_limit)
+	for (; (node_ptr = next_node(&base_node_loc)); base_node_loc++) {
+		if (run_cyclic &&
+		    (node_test_cnt++ >= node_limit))
 				break;
-			base_node_loc++;
-			if (base_node_loc >= node_record_count) {
-				base_node_loc = -1;
-				break;
-			}
-			node_ptr = node_record_table_ptr + base_node_loc;
-		} else {
-			node_ptr = node_record_table_ptr + i;
-		}
 		if (IS_NODE_NO_RESPOND(node_ptr) ||
 		    IS_NODE_FUTURE(node_ptr) ||
 		    IS_NODE_POWERING_DOWN(node_ptr) ||
@@ -483,8 +471,11 @@ extern void run_health_check(void)
 			 *       means the node is allocated
 			 */
 			if (cpus_used == 0) {
-				if (!(node_states & HEALTH_CHECK_NODE_IDLE))
+				if (!(node_states & HEALTH_CHECK_NODE_IDLE) &&
+				    (!(node_states & HEALTH_CHECK_NODE_NONDRAINED_IDLE) ||
+				     IS_NODE_DRAIN(node_ptr))) {
 					continue;
+				}
 				if (!IS_NODE_IDLE(node_ptr))
 					continue;
 			} else if (cpus_used < cpus_total) {
@@ -502,8 +493,8 @@ extern void run_health_check(void)
 		hostlist_push_host(check_agent_args->hostlist, node_ptr->name);
 		check_agent_args->node_count++;
 	}
-	if (run_cyclic && (i >= node_record_count))
-		base_node_loc = -1;
+	if (base_node_loc >= node_record_count)
+		base_node_loc = 0;
 #endif
 
 	if (check_agent_args->node_count == 0) {
@@ -553,8 +544,7 @@ extern void update_nodes_acct_gather_data(void)
 		agent_args->node_count++;
 	}
 #else
-	for (i = 0, node_ptr = node_record_table_ptr;
-	     i < node_record_count; i++, node_ptr++) {
+	for (i = 0; (node_ptr = next_node(&i)); i++) {
 		if (IS_NODE_NO_RESPOND(node_ptr) ||
 		    IS_NODE_FUTURE(node_ptr) ||
 		    IS_NODE_POWERING_DOWN(node_ptr) ||

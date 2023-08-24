@@ -1,4 +1,4 @@
-.TH squeue "1" "Slurm Commands" "May 2021" "Slurm Commands"
+.TH squeue "1" "Slurm Commands" "January 2023" "Slurm Commands"
 
 .SH "NAME"
 squeue \- view information about jobs located in the Slurm scheduling queue.
@@ -32,14 +32,6 @@ Display one job array element per line.
 Without this option, the display will be optimized for use with job arrays
 (pending job array elements will be combined on one line of output with the
 array index values printed using a regular expression).
-.IP
-
-.TP
-\fB\-\-array\-unique\fR
-Display one unique pending job array element per line. Without this option,
-the pending job array elements will be grouped into the master array job to
-optimize the display.  This can also be set with the environment variable
-SQUEUE_ARRAY_UNIQUE.
 .IP
 
 .TP
@@ -397,16 +389,6 @@ See the \fBJOB REASON CODES\fR section below for more information.
 .IP
 
 .TP
-\fB%s\fR
-Node selection plugin specific data for a job. Possible data includes:
-Geometry requirement of resource allocation (X,Y,Z dimensions),
-Connection type (TORUS, MESH, or NAV == torus else mesh),
-Permit rotation of geometry (yes or no),
-Node use (VIRTUAL or COPROCESSOR), etc.
-(Valid for jobs only)
-.IP
-
-.TP
 \fB%S\fR
 Actual or expected start time of the job or job step.
 (Valid for jobs and job steps)
@@ -506,7 +488,7 @@ option described above (which supports greater flexibility in formatting, but
 does not support access to all fields because we ran out of letters).
 Requests a comma separated list of job information to be displayed.
 
-The format of each field is "type[:[.][size][sufix]]"
+The format of each field is "type[:[.][size][suffix]]"
 .IP
 .RS 10
 .TP
@@ -522,7 +504,7 @@ By default output is left justified.
 .IP
 
 .TP
-\fIsufix\fR
+\fIsuffix\fR
 Arbitrary string to append to the end of the field.
 .IP
 .RE
@@ -651,6 +633,11 @@ OCI container bundle path.
 .IP
 
 .TP
+\fBContainerID\fR
+OCI container assigned ID.
+.IP
+
+.TP
 \fBCores\fR
 Number of cores per socket requested by the job.
 This reports the value of the \fBsrun \-\-cores\-per\-socket\fR option.
@@ -705,7 +692,9 @@ dependencies.
 
 .TP
 \fBDerivedEC\fR
-Derived exit code for the job, which is the highest exit code of any job step.
+The highest exit code returned by the job's job steps (srun invocations).
+Following the colon is the signal that caused the process to terminate if
+it was terminated by a signal.
 (Valid for jobs only)
 .IP
 
@@ -723,7 +712,9 @@ The time of job termination, actual or expected.
 
 .TP
 \fBexit_code\fR
-The exit code for the job.
+The exit code returned by the job, typically as set by the exit() function.
+Following the colon is the signal that caused the process to terminate if it was
+terminated by a signal.
 (Valid for jobs only)
 .IP
 
@@ -955,16 +946,22 @@ Partition of the job or job step.
 .IP
 
 .TP
+\fBPendingTime\fR
+The time (in seconds) between start time and submit time of the job.
+If the job has not started yet, then the time (in seconds) between
+now and the submit time of the job.
+(Valid for jobs only)
+.IP
+
+.TP
 \fBPreemptTime\fR
 The preempt time for the job.
 (Valid for jobs only)
 .IP
 
 .TP
-\fBPendingTime\fR
-The time (in seconds) between start time and submit time of the job.
-If the job has not started yet, then the time (in seconds) between
-now and the submit time of the job.
+\fBPrefer\fR
+The preferred features of a pending job.
 (Valid for jobs only)
 .IP
 
@@ -1075,16 +1072,6 @@ When (S:C:T) has not been set, "*" is displayed.
 .IP
 
 .TP
-\fBSelectJobInfo\fR
-Node selection plugin specific data for a job. Possible data includes:
-Geometry requirement of resource allocation (X,Y,Z dimensions),
-Connection type (TORUS, MESH, or NAV == torus else mesh),
-Permit rotation of geometry (yes or no),
-Node use (VIRTUAL or COPROCESSOR), etc.
-(Valid for jobs only)
-.IP
-
-.TP
 \fBSiblingsActive\fR
 Cluster names of where federated sibling jobs exist.
 (Valid for federated jobs only)
@@ -1165,7 +1152,7 @@ The directory for standard out to output to.
 Job or job step ID.
 In the case of job arrays, the job ID format will be of the form
 "<base_job_id>_<index>".
-(Valid forjob steps only)
+(Valid for job steps only)
 .IP
 
 .TP
@@ -1336,8 +1323,9 @@ Use the environment variable SLURM_BITSTR_LEN to specify larger field sizes.
 
 .TP
 \f3\-\-json\fP
-Dump job information as JSON. All other formatting and filtering arguments will
-be ignored.
+Dump all job information as JSON. All information is dumped, even if it would
+normally not be. Formatting options are ignored; however, filtering arguments
+are still used.
 .IP
 
 .TP
@@ -1499,8 +1487,9 @@ Print version information and exit.
 
 .TP
 \f3\-\-yaml\fP
-Dump job information as YAML. All other formatting and filtering arguments will
-be ignored.
+Dump all job information as YAML. All information is dumped, even if it would
+normally not be. Formatting options are ignored; however, filtering arguments
+are still used.
 .IP
 
 .SH "JOB REASON CODES"
@@ -1508,9 +1497,24 @@ These codes identify the reason that a job is waiting for execution.
 A job may be waiting for more than one reason, in which case only
 one of those reasons is displayed.
 
+The Reasons listed below are some of the more common ones you might see.
+For a full list of Reason codes see our Resource Limits page:
+<https://slurm.schedmd.com/resource_limits.html>
+
 .TP 22
+\fBAssocGrp*Limit\fR
+The job's association has reached an aggregate limit on some resource.
+.IP
+
+.TP
 \fBAssociationJobLimit\fR
 The job's association has reached its maximum job count.
+.IP
+
+.TP
+\fBAssocMax*Limit\fR
+The job requests a resource that violates a per-job limit on the requested
+association.
 .IP
 
 .TP
@@ -1540,7 +1544,12 @@ The job is being requeued and still cleaning up from its previous execution.
 
 .TP
 \fBDependency\fR
-This job is waiting for a dependent job to complete.
+This job has a dependency on another job that has not been satisfied.
+.IP
+
+.TP
+\fBDependencyNeverSatisfied\fR
+This job has a dependency on another job that will never be satisfied.
 .IP
 
 .TP
@@ -1628,8 +1637,19 @@ Its PrologSlurmctld program is still running.
 .IP
 
 .TP
+\fBQOSGrp*Limit\fR
+The job's QOS has reached an aggregate limit on some resource.
+.IP
+
+.TP
 \fBQOSJobLimit\fR
 The job's QOS has reached its maximum job count.
+.IP
+
+.TP
+\fBQOSMax*Limit\fR
+The job requests a resource that violates a per-job limit on the requested
+QOS.
 .IP
 
 .TP
@@ -1640,6 +1660,11 @@ The job's QOS has reached some resource limit.
 .TP
 \fBQOSTimeLimit\fR
 The job's QOS has reached its time limit.
+.IP
+
+.TP
+\fBQOSUsageThreshold\fR
+Required QOS threshold has been breached.
 .IP
 
 .TP
@@ -1670,11 +1695,6 @@ Failure of the Slurm system, a file system, the network, etc.
 .TP
 \fBTimeLimit\fR
 The job exhausted its time limit.
-.IP
-
-.TP
-\fBQOSUsageThreshold\fR
-Required QOS threshold has been breached.
 .IP
 
 .TP
@@ -1852,6 +1872,13 @@ Same as \fB\-\-clusters\fR
 .TP
 \fBSLURM_CONF\fR
 The location of the Slurm configuration file.
+.IP
+
+.TP
+\fBSLURM_DEBUG_FLAGS\fR
+Specify debug flags for squeue to use. See DebugFlags in the
+\fBslurm.conf\fR(5) man page for a full list of flags. The environment
+variable takes precedence over the setting in the slurm.conf.
 .IP
 
 .TP

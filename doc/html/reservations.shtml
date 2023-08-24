@@ -159,7 +159,7 @@ feature that every selected node must contain.</p>
 whole nodes.
 This capability permits the administrator to identify the core count to be
 reserved on each node as shown in the examples below.<br>
-<b>NOTE:</b> Core reservations are not available when the system is configured
+<b>NOTE</b>: Core reservations are not available when the system is configured
 to use the select/linear plugin.</p>
 <pre>
 # Create a two core reservation for user alan
@@ -278,7 +278,7 @@ $ scontrol delete ReservationName=alan_6
 </pre>
 <p>
 
-<b>NOTE:</b> By default, when a reservation ends the reservation request will be
+<b>NOTE</b>: By default, when a reservation ends the reservation request will be
 removed from any pending jobs submitted to the reservation and will be put into
 a held state.  Use the NO_HOLD_JOBS_AFTER_END reservation flag to let jobs run
 outside of the reservation after the reservation is gone.
@@ -465,6 +465,10 @@ create a reservation that will allow jobs to run in it without requiring that
 they specify the name of the reservation. The reservation will only "attract"
 jobs that meet the access control requirements.</p>
 
+<p><b>NOTE</b>: Magnetic reservations cannot "attract" heterogeneous jobs -
+heterogeneous jobs will only run in magnetic reservations if they explicitly
+request the reservation.</p>
+
 <p>The following example shows a reservation created on node05. The user
 specified as being able to access the reservation then submits a job and
 the job starts on the reserved node.</p>
@@ -525,7 +529,7 @@ considering the initiation of jobs.
 This will prevent the initiation of some jobs which would complete execution
 before a reservation given fewer jobs to time-slice with.</p>
 
-<p style="text-align: center;">Last modified 28 August 2020</p>
+<p style="text-align: center;">Last modified 10 October 2022</p>
 
 <!--#include virtual="footer.txt"-->
 

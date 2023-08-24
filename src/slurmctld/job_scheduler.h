@@ -54,6 +54,8 @@ typedef struct job_queue_rec {
 	slurmctld_resv_t *resv_ptr;     /* If job didn't ask for a reservation,
 					 * this reservation is one it can run
 					 * in without requesting */
+	bool use_prefer; /* This is a separate queue record to evaluate the
+			    job's prefer constraint. */
 } job_queue_rec_t;
 
 /* Use as return values for test_job_dependency. */
@@ -70,11 +72,14 @@ extern void main_sched_fini(void);
 
 /*
  * build_feature_list - Translate a job's feature string into a feature_list
- * IN  details->features
- * OUT details->feature_list
+ * IN  details->features|prefer
+ * OUT details->feature_list|prefer_list
+ * IN  prefer - if prefer or feature is being processed
+ * IN  is_reservation - true if for a reservation, false otherwise
  * RET error code
  */
-extern int build_feature_list(job_record_t *job_ptr);
+extern int build_feature_list(job_record_t *job_ptr, bool prefer,
+			      bool is_reservation);
 
 /*
  * Set up job_queue_rec->job_ptr to use a magnetic reservation if the
@@ -152,11 +157,12 @@ extern int handle_job_dependency_updates(void *object, void *arg);
  */
 extern bool job_is_completing(bitstr_t *eff_cg_bitmap);
 
-/* Determine if a pending job will run using only the specified nodes
- * (in job_desc_msg->req_nodes), build response message and return
- * SLURM_SUCCESS on success. Otherwise return an error code. Caller
- * must free response message */
-extern int job_start_data(job_desc_msg_t *job_desc_msg,
+/*
+ * Determine if a pending job will run using only the specified nodes, build
+ * response message and return SLURM_SUCCESS on success. Otherwise return an
+ * error code. Caller must free response message.
+ */
+extern int job_start_data(job_record_t *job_ptr,
 			  will_run_response_msg_t **resp);
 
 /*
@@ -179,18 +185,12 @@ extern int make_batch_job_cred(batch_job_launch_msg_t *launch_msg_ptr,
 /*
  * Determine which nodes must be rebooted for a job
  * IN job_ptr - pointer to job that will be initiated
+ * IN/OUT reboot_features - features that should be applied to the node on
+ *                          reboot. Caller must xfree().
  * RET bitmap of nodes requiring a reboot for NodeFeaturesPlugin or NULL if none
  */
-extern bitstr_t *node_features_reboot(job_record_t *job_ptr);
-
-/*
- * Determine if node boot required for this job
- * IN job_ptr - pointer to job that will be initiated
- * IN node_bitmap - nodes to be allocated
- * RET - true if reboot required
- */
-extern bool node_features_reboot_test(job_record_t *job_ptr,
-				      bitstr_t *node_bitmap);
+extern bitstr_t *node_features_reboot(job_record_t *job_ptr,
+				      char **reboot_features);
 
 /* Print a job's dependency information based upon job_ptr->depend_list */
 extern void print_job_dependency(job_record_t *job_ptr, const char *func);
@@ -210,7 +210,7 @@ extern void prolog_slurmctld(job_record_t *job_ptr);
  * IN job_ptr - pointer to job that will be initiated
  * RET SLURM_SUCCESS(0) or error code
  */
-extern int reboot_job_nodes(job_record_t *job_ptr);
+extern void reboot_job_nodes(job_record_t *job_ptr);
 
 /* If a job can run in multiple partitions, make sure that the one
  * actually used is first in the string. Needed for job state save/restore */

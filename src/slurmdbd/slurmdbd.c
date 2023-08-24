@@ -58,14 +58,16 @@
 #include "src/common/log.h"
 #include "src/common/proc_args.h"
 #include "src/common/read_config.h"
-#include "src/common/slurm_accounting_storage.h"
-#include "src/common/slurm_auth.h"
+#include "src/interfaces/accounting_storage.h"
+#include "src/interfaces/auth.h"
 #include "src/common/slurm_rlimits_info.h"
 #include "src/common/slurm_time.h"
 #include "src/common/uid.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xsignal.h"
 #include "src/common/xstring.h"
+
+#include "src/interfaces/hash.h"
 
 #include "src/slurmdbd/read_config.h"
 #include "src/slurmdbd/rpc_mgr.h"
@@ -150,6 +152,7 @@ int main(int argc, char **argv)
 	 * able to write a core dump.
 	 */
 	_init_pidfile();
+	_become_slurm_user();
 
 	/*
 	 * Do plugin init's after _init_pidfile so systemd is happy as
@@ -159,12 +162,14 @@ int main(int argc, char **argv)
 	if (slurm_auth_init(NULL) != SLURM_SUCCESS) {
 		fatal("Unable to initialize authentication plugins");
 	}
+	if (hash_g_init() != SLURM_SUCCESS) {
+		fatal("failed to initialize hash plugin");
+	}
 	if (slurm_acct_storage_init() != SLURM_SUCCESS) {
 		fatal("Unable to initialize %s accounting storage plugin",
 		      slurm_conf.accounting_storage_type);
 	}
 
-	_become_slurm_user();
 	if (foreground == 0 || setwd)
 		_set_work_dir();
 	log_config();
@@ -851,6 +856,8 @@ static int _send_slurmctld_register_req(slurmdb_cluster_rec_t *cluster_rec)
 		       cluster_rec->control_host);
 	fd = slurm_open_msg_conn(&ctld_address);
 	if (fd < 0) {
+		log_flag(NET, "%s: slurm_open_msg_conn(%pA): %m",
+			 __func__, &ctld_address);
 		rc = SLURM_ERROR;
 	} else {
 		slurm_msg_t out_msg;
@@ -966,7 +973,7 @@ static void _become_slurm_user(void)
 	/* Set GID to GID of SlurmUser */
 	if ((slurm_user_gid != getegid()) &&
 	    (setgid(slurm_user_gid))) {
-		fatal("Failed to set GID to %d", slurm_user_gid);
+		fatal("Failed to set GID to %u", slurm_user_gid);
 	}
 
 	/* Set UID to UID of SlurmUser */
@@ -977,7 +984,7 @@ static void _become_slurm_user(void)
 	}
 }
 
-extern void _restart_self(int argc, char **argv)
+static void _restart_self(int argc, char **argv)
 {
 	info("Restarting self");
 	if (execvp(argv[0], argv))

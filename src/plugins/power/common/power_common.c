@@ -72,7 +72,7 @@
 /* For all nodes in a cluster
  * 1) set default values and
  * 2) return global power allocation/consumption information */
-extern void get_cluster_power(node_record_t *node_record_table_ptr,
+extern void get_cluster_power(node_record_t **node_record_table_ptr,
 			      int node_record_count,
 			      uint32_t *alloc_watts, uint32_t *used_watts)
 {
@@ -84,8 +84,7 @@ extern void get_cluster_power(node_record_t *node_record_table_ptr,
 	if (!(slurm_conf.debug_flags & DEBUG_FLAG_POWER))
 		return;
 
-	for (i = 0, node_ptr = node_record_table_ptr; i < node_record_count;
-	     i++, node_ptr++) {
+	for (i = 0; (node_ptr = next_node(&i)); i++) {
 		if (node_ptr->power) {
 			if (!node_ptr->power->cap_watts) {	/* No limit */
 				if (!node_ptr->power->max_watts)
@@ -114,13 +113,12 @@ extern void get_cluster_power(node_record_t *node_record_table_ptr,
  * NOTE: Job data structure must be locked on function entry
  * NOTE: Call list_delete() to free return value
  * NOTE: This function is currently unused. */
-extern List get_job_power(List job_list, node_record_t *node_record_table_ptr)
+extern List get_job_power(List job_list, node_record_t **node_record_table_ptr)
 {
 	node_record_t *node_ptr;
 	job_record_t *job_ptr;
 	ListIterator job_iterator;
 	power_by_job_t *power_ptr;
-	int i, i_first, i_last;
 	List job_power_list = list_create(xfree_ptr);
 	time_t now = time(NULL);
 
@@ -137,14 +135,9 @@ extern List get_job_power(List job_list, node_record_t *node_record_table_ptr)
 			      __func__, job_ptr);
 			continue;
 		}
-		i_first = bit_ffs(job_ptr->node_bitmap);
-		if (i_first < 0)
-			continue;
-		i_last = bit_fls(job_ptr->node_bitmap);
-		for (i = i_first; i <= i_last; i++) {
-			if (!bit_test(job_ptr->node_bitmap, i))
-				continue;
-			node_ptr = node_record_table_ptr + i;
+		for (int i = 0;
+		     (node_ptr = next_node_bitmap(job_ptr->node_bitmap, &i));
+		     i++) {
 			if (node_ptr->power) {
 				power_ptr->alloc_watts +=
 					node_ptr->power->cap_watts;
@@ -380,9 +373,8 @@ extern char *power_run_script(char *script_name, char *script_path,
 /* For a newly starting job, set "new_job_time" in each of it's nodes
  * NOTE: The job and node data structures must be locked on function entry */
 extern void set_node_new_job(job_record_t *job_ptr,
-			     node_record_t *node_record_table_ptr)
+			     node_record_t **node_record_table_ptr)
 {
-	int i, i_first, i_last;
 	node_record_t *node_ptr;
 	time_t now = time(NULL);
 
@@ -391,15 +383,8 @@ extern void set_node_new_job(job_record_t *job_ptr,
 		return;
 	}
 
-	i_first = bit_ffs(job_ptr->node_bitmap);
-	if (i_first >= 0)
-		i_last = bit_fls(job_ptr->node_bitmap);
-	else
-		i_last = i_first - 1;
-	for (i = i_first; i <= i_last; i++) {
-		if (!bit_test(job_ptr->node_bitmap, i))
-			continue;
-		node_ptr = node_record_table_ptr + i;
+	for (int i = 0; (node_ptr = next_node_bitmap(job_ptr->node_bitmap, &i));
+	     i++) {
 		if (node_ptr->power)
 			node_ptr->power->new_job_time = now;
 	}

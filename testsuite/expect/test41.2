@@ -27,12 +27,20 @@ source ./globals
 
 set spec $test_dir/openapi.spec
 set pyapi $test_dir/py_api
-set pyenv $test_dir/env
 set usock $test_dir/slurmrestd.sock
+set external_slurmrestd 0
 set scripts "[$bin_pwd]/${test_name}_scripts"
 
 # Avoid fatal on slurmrestd because it should not be run as SlurmUser
 set env(SLURMRESTD_SECURITY) disable_user_check
+
+# Set env(SLURM_TESTSUITE_SLURMRESTD_SOCKET) to use external slurmrestd service
+# instead. If SLURM_TESTSUITE_SLURMRESTD_SOCKET is set test won't start/stop
+# its own slurmrestd but will relay into an externally running one.
+if {[info exists env(SLURM_TESTSUITE_SLURMRESTD_SOCKET)]} {
+	set usock $env(SLURM_TESTSUITE_SLURMRESTD_SOCKET)
+	set external_slurmrestd 1
+}
 
 if {![file exists $slurmrestd]} {
 	skip "slurmrestd not installed"
@@ -72,6 +80,12 @@ if {[run_command_status -nolog "$bin_virtualenv  --version"]} {
 
 proc cleanup {} {
 }
+
+# Use Bash as the default shell
+set ::env(SHELL) $bin_bash
+
+# Make sure that PIP only works with virtualenv
+set ::env(PIP_REQUIRE_VIRTUALENV) "true"
 
 foreach content_path [glob -type d $scripts/*] {
 	set content [file tail $content_path]
@@ -124,23 +138,33 @@ foreach content_path [glob -type d $scripts/*] {
 	cd $test_dir
 
 	run_command -nolog -fail \
-		"$bin_oasgen generate -i '$spec' -g python --strict-spec=true -o '$pyapi'"
+		"$bin_oasgen generate -i '$spec' -g python --strict-spec=true -o '$pyapi/$content/'"
+
+	set pyenv $test_dir/env/$content/
 
 	run_command -nolog -fail \
-		"$bin_virtualenv --clear --no-download --system-site-packages $pyenv"
+		"$bin_virtualenv --creator=venv --clear --no-download $pyenv"
 
-	run_command -nolog -fail \
-		"source $pyenv/bin/activate; pip3 install '$pyapi'"
+	set activate_path "$pyenv/bin/activate"
+	if {![file isfile $activate_path]} {
+		log_debug "swapping to virtualenv local subdir"
+		set activate_path "$pyenv/local/bin/activate"
+	}
+
+	run_command -timeout 300 -fail \
+		"source $activate_path; python3 -m pip install '$pyapi/$content/'"
 
 	foreach script [glob -type f $scripts/$content/*.py] {
 		log_debug "running: $script"
 
-		file delete $usock
-		log_debug "forking slurmrestd"
-		set restpid [exec $slurmrestd "-vv" "-s" $content "-a" "rest_auth/local" "unix:${usock}" "&"]
+		if {!$external_slurmrestd} {
+			file delete $usock
+			log_debug "forking slurmrestd"
+			set restpid [exec $slurmrestd "-vv" "-s" $content "-a" "rest_auth/local" "unix:${usock}" "&"]
 
-		#wait for slurmrestd to start
-		run_command_status -timeout 10 -subtest "while \[ \! -S ${usock} \]; do sleep 0.1; done"
+			# Wait for slurmrestd to start
+			run_command_status -timeout 10 -subtest "while \[ \! -S ${usock} \]; do sleep 0.1; done"
+		}
 
 		# To avoid collisions with any existing listening service, we will
 		# unshare the network namespace and use socat to talk to the unix
@@ -158,6 +182,8 @@ foreach content_path [glob -type d $scripts/*] {
 			'
 		"
 
-		run_command -nolog -fail "$bin_kill -s INT $restpid"
+		if {!$external_slurmrestd} {
+			run_command -nolog -fail "$bin_kill -s INT $restpid"
+		}
 	}
 }

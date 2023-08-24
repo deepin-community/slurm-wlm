@@ -49,7 +49,7 @@
 #include "slurm/slurm.h"
 #include "slurm/slurm_errno.h"
 
-#include "src/common/gres.h"
+#include "src/interfaces/gres.h"
 #include "src/common/log.h"
 #include "src/common/pack.h"
 #include "src/common/read_config.h"
@@ -109,7 +109,7 @@ int main(int argc, char *argv[])
 	 * Logic normally executed by slurmctld daemon
 	 */
 	orig_config = "gpu:8";
-	rc = gres_init_node_config(node_name, orig_config, &node_gres_list);
+	rc = gres_init_node_config(orig_config, &node_gres_list);
 	if (rc)
 		fatal("failure: gres_init_node_config: %s",
 		      slurm_strerror(rc));
@@ -172,7 +172,7 @@ int main(int argc, char *argv[])
 	gres_job_state_log(job_gres_list, job_id);
 
 	cpu_bitmap = bit_alloc(cpu_count);
-	bit_nset(cpu_bitmap, 0, cpu_count - 1);
+	bit_set_all(cpu_bitmap);
 	cpu_alloc = gres_job_test(job_gres_list, node_gres_list, true,
 				  cpu_bitmap, 0, cpu_count - 1,
 				  job_id, node_name, false);
