@@ -50,7 +50,7 @@
 #include "pmixp_conn.h"
 #include "pmixp_dconn.h"
 
-#include "src/common/slurm_auth.h"
+#include "src/interfaces/auth.h"
 
 #define PMIXP_DEBUG_SERVER 1
 
@@ -366,13 +366,13 @@ pmixp_p2p_data_t _direct_proto = {
 
 static volatile int _was_initialized = 0;
 
-int pmixp_stepd_init(const stepd_step_rec_t *job, char ***env)
+int pmixp_stepd_init(const stepd_step_rec_t *step, char ***env)
 {
 	char *path;
 	int fd, rc;
 
-	if (SLURM_SUCCESS != (rc = pmixp_info_set(job, env))) {
-		PMIXP_ERROR("pmixp_info_set(job, env) failed");
+	if (SLURM_SUCCESS != (rc = pmixp_info_set(step, env))) {
+		PMIXP_ERROR("pmixp_info_set(step, env) failed");
 		goto err_info;
 	}
 
@@ -388,7 +388,6 @@ int pmixp_stepd_init(const stepd_step_rec_t *job, char ***env)
 		rc = SLURM_ERROR;
 		goto err_usock;
 	}
-	fd_set_close_on_exec(fd);
 	pmixp_info_srv_usock_set(path, fd);
 
 
@@ -609,15 +608,13 @@ static int _serv_read(eio_obj_t *obj, List objs)
 	/* Read and process all received messages */
 	while (proceed) {
 		if (!pmixp_conn_progress_rcv(conn)) {
-			proceed = 0;
+			proceed = false;
 		}
 		if (!pmixp_conn_is_alive(conn)) {
 			obj->shutdown = true;
 			PMIXP_DEBUG("Connection closed fd = %d", obj->fd);
-			/* cleanup after this connection */
-			eio_remove_obj(obj, objs);
 			pmixp_conn_return(conn);
-			proceed = 0;
+			proceed = false;
 		}
 	}
 	return 0;
@@ -675,8 +672,6 @@ static int _serv_write(eio_obj_t *obj, List objs)
 	if (!pmixp_conn_is_alive(conn)) {
 		obj->shutdown = true;
 		PMIXP_DEBUG("Connection finalized fd = %d", obj->fd);
-		/* cleanup after this connection */
-		eio_remove_obj(obj, objs);
 		pmixp_conn_return(conn);
 	}
 	return 0;
@@ -744,7 +739,7 @@ static int _process_extended_hdr(pmixp_base_hdr_t *hdr, buf_t *buf)
 		goto unlock;
 	}
 
-	switch (pmixp_dconn_progress_type(dconn)) {
+	switch (pmixp_dconn_progress_type()) {
 	case PMIXP_DCONN_PROGRESS_SW:{
 		/* this direct connection has fd that needs to be
 		 * polled to progress, use connection interface for that
@@ -774,7 +769,7 @@ static int _process_extended_hdr(pmixp_base_hdr_t *hdr, buf_t *buf)
 	}
 	default:
 		/* Should not happen */
-		xassert(0 && pmixp_dconn_progress_type(dconn));
+		xassert(0 && pmixp_dconn_progress_type());
 		/* TODO: handle this error */
 	}
 unlock:
@@ -790,7 +785,7 @@ static void _process_server_request(pmixp_base_hdr_t *hdr, buf_t *buf)
 	case PMIXP_MSG_FAN_IN:
 	case PMIXP_MSG_FAN_OUT: {
 		pmixp_coll_t *coll;
-		pmixp_proc_t *procs = NULL;
+		pmix_proc_t *procs = NULL;
 		size_t nprocs = 0;
 		pmixp_coll_type_t type = 0;
 		int c_nodeid;
@@ -900,7 +895,7 @@ static void _process_server_request(pmixp_base_hdr_t *hdr, buf_t *buf)
 #endif
 	case PMIXP_MSG_RING: {
 		pmixp_coll_t *coll = NULL;
-		pmixp_proc_t *procs = NULL;
+		pmix_proc_t *procs = NULL;
 		size_t nprocs = 0;
 		pmixp_coll_ring_msg_hdr_t ring_hdr;
 		pmixp_coll_type_t type = 0;
@@ -1296,7 +1291,7 @@ _direct_conn_establish(pmixp_conn_t *conn, void *_hdr, void *msg)
 	if (!dconn) {
 		/* connection was refused because we already
 		 * have established connection
-		 * It seems that some sort of race condition occured
+		 * It seems that some sort of race condition occurred
 		 */
 		close(fd);
 		nodename = pmixp_info_job_host(hdr->nodeid);
@@ -1327,7 +1322,6 @@ void pmixp_server_direct_conn(int fd)
 
 	/* Set nonblocking */
 	fd_set_nonblocking(fd);
-	fd_set_close_on_exec(fd);
 	pmixp_fd_set_nodelay(fd);
 	conn = pmixp_conn_new_temp(PMIXP_PROTO_DIRECT, fd,
 				   _direct_conn_establish);
@@ -1381,11 +1375,11 @@ int pmixp_server_direct_conn_early(void)
 	pmixp_coll_type_t type = pmixp_info_srv_fence_coll_type();
 	pmixp_coll_t *coll[PMIXP_COLL_TYPE_FENCE_MAX] = { NULL };
 	int i, rc, count = 0;
-	pmixp_proc_t proc;
+	pmix_proc_t proc;
 
 	PMIXP_DEBUG("called");
 	proc.rank = pmixp_lib_get_wildcard();
-	strncpy(proc.nspace, _pmixp_job_info.nspace, PMIXP_MAX_NSLEN);
+	strlcpy(proc.nspace, _pmixp_job_info.nspace, sizeof(proc.nspace));
 
 	for (i=0; i < sizeof(types)/sizeof(types[0]); i++){
 		if (type != PMIXP_COLL_TYPE_FENCE_MAX && type != types[i]) {
@@ -1476,7 +1470,6 @@ void pmixp_server_slurm_conn(int fd)
 
 	/* Set nonblocking */
 	fd_set_nonblocking(fd);
-	fd_set_close_on_exec(fd);
 	conn = pmixp_conn_new_temp(PMIXP_PROTO_SLURM, fd, _slurm_new_msg);
 
 	/* try to process right here */
@@ -1569,10 +1562,9 @@ static int _slurm_send(pmixp_ep_t *ep, pmixp_base_hdr_t bhdr, buf_t *buf)
 		break;
 	case PMIXP_EP_NOIDEID: {
 		char *nodename = pmixp_info_job_host(ep->ep.nodeid);
-		char *address = xstrdup(addr);
-
-		xstrsubstitute(address, "%n", nodename);
-		xstrsubstitute(address, "%h", nodename);
+		char *address = slurm_conf_expand_slurmd_path(addr,
+							      nodename,
+							      nodename);
 
 		rc = pmixp_p2p_send(nodename, address, data, dsize,
 				    500, 7, 0);
@@ -1988,11 +1980,11 @@ typedef void (*pmixp_cperf_cbfunc_fn_t)(int status, const char *data,
 static int _pmixp_server_cperf_iter(pmixp_coll_type_t type, char *data, int ndata)
 {
 	pmixp_coll_t *coll;
-	pmixp_proc_t procs;
+	pmix_proc_t procs;
 	int cur_count = _pmixp_server_cperf_count();
 	pmixp_cperf_cbfunc_fn_t cperf_cbfunc = _pmixp_cperf_tree_cbfunc;
 
-	strncpy(procs.nspace, pmixp_info_namespace(), PMIXP_MAX_NSLEN);
+	strlcpy(procs.nspace, pmixp_info_namespace(), sizeof(procs.nspace));
 	procs.rank = pmixp_lib_get_wildcard();
 
 	switch (type) {

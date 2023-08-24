@@ -87,10 +87,10 @@ if {[get_admin_level] ne "Administrator"} {
 	skip "This test can't be run without being an Accounting administrator.\nUse: sacctmgr mod user \$USER set admin=admin"
 }
 
-# Make sure we have a clean system and permission to do this work
-remove_cluster "$tc1,$tc2,$tc3"
-if {$access_err != 0} {
-	skip "Not authorized to perform this test"
+if { [get_config_param -dbd "AllowNoDefAcct"] eq "Yes" } {
+	set def_acct ""
+} else {
+	set def_acct $ta1
 }
 
 proc cleanup {} {
@@ -99,6 +99,12 @@ proc cleanup {} {
 	remove_user "" "" "$tu1,$tu2,$tu3"
 	remove_acct "" "$ta1,$ta2,$ta3"
 	remove_cluster "$tc1,$tc2,$tc3"
+}
+
+# Make sure we have a clean system and permission to do this work
+cleanup
+if {$access_err != 0} {
+	skip "Not authorized to perform this test"
 }
 
 # Add cluster
@@ -132,7 +138,7 @@ expect {
 	-re "There was a problem" {
 		fail "There was a problem with the sacctmgr command"
 	}
-	-re "($tu1.$ta2.$user_mod_acct(adminlevel).|($tu2|$tu3).$ta1.$user_mod_acct2(adminlevel).)" {
+	-re "($tu1.$ta2.$user_mod_acct(adminlevel).|($tu2|$tu3).$def_acct.$user_mod_acct2(adminlevel).)" {
 		incr matches
 		exp_continue
 	}

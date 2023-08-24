@@ -2,7 +2,7 @@
  *  gres_select_util.h - filters used in the select plugin
  *****************************************************************************
  *  Copyright (C) 2020 SchedMD LLC.
- *  Derived in large part from code previously in common/gres.h
+ *  Derived in large part from code previously in interfaces/gres.h
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.
@@ -37,7 +37,7 @@
 #ifndef _GRES_SELECT_UTIL_H
 #define _GRES_SELECT_UTIL_H
 
-#include "src/common/gres.h"
+#include "src/interfaces/gres.h"
 
 /*
  * Set job default parameters in a given element of a list
@@ -126,5 +126,13 @@ extern bool gres_select_util_job_tres_per_task(List job_gres_list);
  * sock_gres_list (per-socket GRES details for some node)
  */
 extern uint32_t gres_select_util_get_task_limit(List sock_gres_list);
+
+/*
+ * Create a (partial) copy of a job's gres state accumlating the gres_per_*
+ * requirements to accuratly calculate cpus_per_gres
+ * IN gres_list - List of Gres records
+ * RET The copy of list or NULL on failure
+ */
+extern List gres_select_util_create_list_req_accum(List gres_list);
 
 #endif /* _GRES_SELECT_UTIL_H */

@@ -40,7 +40,7 @@
 \*****************************************************************************/
 
 #include "src/common/slurm_xlator.h"
-#include "src/common/slurm_jobacct_gather.h"
+#include "src/interfaces/jobacct_gather.h"
 
 /*
  * These variables are required by the generic plugin interface.  If they
@@ -86,8 +86,7 @@ extern int fini ( void )
 	return SLURM_SUCCESS;
 }
 
-extern void jobacct_gather_p_poll_data(List task_list, bool pgid_plugin,
-				       uint64_t cont_id)
+extern void jobacct_gather_p_poll_data(List task_list, uint64_t cont_id)
 {
 	return;
 }

@@ -303,8 +303,8 @@ static int _assign_clusters_to_federation(mysql_conn_t *mysql_conn,
 		goto end_it;
 
 end_it:
-	list_destroy(add_list);
-	list_destroy(rem_list);
+	FREE_NULL_LIST(add_list);
+	FREE_NULL_LIST(rem_list);
 
 	return rc;
 }
@@ -695,7 +695,7 @@ extern List as_mysql_remove_federations(mysql_conn_t *mysql_conn, uint32_t uid,
 
 		if ((rc = remove_common(mysql_conn, DBD_REMOVE_FEDERATIONS, now,
 					user_name, federation_table, name_char,
-					NULL, NULL, ret_list, NULL)))
+					NULL, NULL, ret_list, NULL, NULL)))
 			break;
 	}
 	mysql_free_result(result);

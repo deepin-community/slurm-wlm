@@ -79,6 +79,12 @@ typedef struct {
 #define remaining_buf(__buf)		(__buf->size - __buf->processed)
 #define size_buf(__buf)			(__buf->size)
 
+typedef struct {
+	buf_t *header;
+	buf_t *auth;
+	buf_t *body;
+} msg_bufs_t;
+
 extern buf_t *create_buf(char *data, uint32_t size);
 extern buf_t *create_mmap_buf(const char *file);
 extern void free_buf(buf_t *my_buf);
@@ -130,11 +136,13 @@ extern void packlongdouble_array(long double *valp, uint32_t size_val,
 extern int unpacklongdouble_array(long double **valp, uint32_t *size_val,
 				  buf_t *buffer);
 
+extern void packbuf(buf_t *source, buf_t *buffer);
+
 extern void packmem(void *valp, uint32_t size_val, buf_t *buffer);
 extern int unpackmem_ptr(char **valp, uint32_t *size_valp, buf_t *buffer);
 extern int unpackmem_xmalloc(char **valp, uint32_t *size_valp, buf_t *buffer);
-extern int unpackmem_malloc(char **valp, uint32_t *size_valp, buf_t *buffer);
 
+extern int unpackstr_xmalloc(char **valp, uint32_t *size_valp, buf_t *buffer);
 extern int unpackstr_xmalloc_escaped(char **valp, uint32_t *size_valp,
 				     buf_t *buffer);
 extern int unpackstr_xmalloc_chooser(char **valp, uint32_t *size_valp,
@@ -258,13 +266,6 @@ extern int unpackmem_array(char *valp, uint32_t size_valp, buf_t *buffer);
 		goto unpack_error;			\
 } while (0)
 
-#define safe_unpackmem_malloc(valp,size_valp,buf) do {	\
-	xassert(sizeof(*size_valp) == sizeof(uint32_t));\
-	xassert(buf->magic == BUF_MAGIC);		\
-	if (unpackmem_malloc(valp,size_valp,buf))	\
-		goto unpack_error;			\
-} while (0)
-
 #define packstr(str,buf) do {				\
 	uint32_t _size = 0;				\
 	if((char *)str != NULL)				\
@@ -327,14 +328,13 @@ extern int unpackmem_array(char *valp, uint32_t size_valp, buf_t *buffer);
 	FREE_NULL_BITMAP(b);				\
 } while (0)
 
-#define unpackstr_malloc	                        \
-        unpackmem_malloc
-
-#define unpackstr_xmalloc	                        \
-        unpackmem_xmalloc
-
-#define safe_unpackstr_malloc	                        \
-        safe_unpackmem_malloc
+#define unpack_bit_str_hex_as_fmt_str(str, buf) do {	\
+	bitstr_t *b = NULL;				\
+	unpack_bit_str_hex(&b, buf);			\
+	if (b)						\
+		*str = bit_fmt_full(b);			\
+	FREE_NULL_BITMAP(b);				\
+} while (0)
 
 #define safe_unpackstr(valp, buf) do {				\
 	uint32_t size_valp;					\

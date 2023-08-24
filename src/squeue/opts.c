@@ -52,6 +52,7 @@
 #include "src/common/xstring.h"
 #include "src/common/proc_args.h"
 #include "src/common/uid.h"
+#include "src/interfaces/serializer.h"
 
 #include "src/squeue/squeue.h"
 
@@ -61,19 +62,18 @@
 #define OPT_LONG_HIDE         0x102
 #define OPT_LONG_START        0x103
 #define OPT_LONG_NOCONVERT    0x104
-#define OPT_LONG_ARRAY_UNIQUE 0x105
 #define OPT_LONG_LOCAL        0x106
 #define OPT_LONG_SIBLING      0x107
 #define OPT_LONG_FEDR         0x108
 #define OPT_LONG_ME           0x109
 #define OPT_LONG_JSON         0x110
 #define OPT_LONG_YAML         0x111
+#define OPT_LONG_AUTOCOMP     0x112
 
 /* FUNCTIONS */
 static List  _build_job_list( char* str );
 static List  _build_str_list( char* str );
 static List  _build_state_list( char* str );
-static List  _build_all_states_list( void );
 static List  _build_step_list( char* str );
 static List  _build_user_list( char* str );
 static char *_get_prefix(char *token);
@@ -101,10 +101,10 @@ parse_command_line( int argc, char* *argv )
 	int opt_char;
 	int option_index;
 	static struct option long_options[] = {
+		{"autocomplete", required_argument, 0, OPT_LONG_AUTOCOMP},
 		{"accounts",   required_argument, 0, 'A'},
 		{"all",        no_argument,       0, 'a'},
 		{"array",      no_argument,       0, 'r'},
-		{"array-unique",no_argument,      0, OPT_LONG_ARRAY_UNIQUE},
 		{"Format",     required_argument, 0, 'O'},
 		{"format",     required_argument, 0, 'o'},
 		{"federation", no_argument,       0, OPT_LONG_FEDR},
@@ -155,8 +155,6 @@ parse_command_line( int argc, char* *argv )
 		params.array_flag = true;
 	if ( ( env_val = getenv("SQUEUE_SORT") ) )
 		params.sort = xstrdup(env_val);
-	if (getenv("SQUEUE_ARRAY_UNIQUE"))
-		params.array_unique_flag = true;
 	if ( ( env_val = getenv("SLURM_CLUSTERS") ) ) {
 		if (!(params.clusters = slurmdb_get_info_cluster(env_val))) {
 			print_db_notok(env_val, 1);
@@ -323,9 +321,6 @@ parse_command_line( int argc, char* *argv )
 				exit(1);
 			}
 			break;
-		case OPT_LONG_ARRAY_UNIQUE:
-			params.array_unique_flag = true;
-			break;
 		case OPT_LONG_HELP:
 			_help();
 			exit(0);
@@ -358,11 +353,19 @@ parse_command_line( int argc, char* *argv )
 			exit(0);
 		case OPT_LONG_JSON:
 			params.mimetype = MIME_TYPE_JSON;
-			data_init(MIME_TYPE_JSON_PLUGIN, NULL);
+			params.detail_flag = true;
+			data_init();
+			serializer_g_init(MIME_TYPE_JSON_PLUGIN, NULL);
 			break;
 		case OPT_LONG_YAML:
 			params.mimetype = MIME_TYPE_YAML;
-			data_init(MIME_TYPE_YAML_PLUGIN, NULL);
+			params.detail_flag = true;
+			data_init();
+			serializer_g_init(MIME_TYPE_YAML_PLUGIN, NULL);
+			break;
+		case OPT_LONG_AUTOCOMP:
+			suggest_completion(long_options, optarg);
+			exit(0);
 			break;
 		}
 	}
@@ -836,12 +839,6 @@ extern int parse_format( char* format )
 							    field_size,
 							    right_justify,
 							    suffix );
-			else if (field[0] == 's')
-				job_format_add_select_jobinfo(
-					params.format_list,
-					field_size,
-					right_justify,
-					suffix );
 			else if (field[0] == 'S')
 				job_format_add_time_start( params.format_list,
 							   field_size,
@@ -973,6 +970,12 @@ extern int parse_long_format( char* format_long )
 							  field_size,
 							  right_justify,
 							  suffix);
+			else if (!xstrncasecmp(token, "containerid",
+					       strlen("containerid")))
+				step_format_add_container_id(params.format_list,
+							     field_size,
+							     right_justify,
+							     suffix);
 			else if (!xstrncasecmp(token, "numtasks",
 					       strlen("numtask")))
 				step_format_add_num_tasks( params.format_list,
@@ -1169,6 +1172,15 @@ extern int parse_long_format( char* format_long )
 							    field_size,
 							    right_justify,
 							    suffix);
+			else if (!xstrcasecmp(token, "container"))
+				job_format_add_container(params.format_list,
+							 field_size,
+							 right_justify, suffix);
+			else if (!xstrcasecmp(token, "containerid"))
+				job_format_add_container_id(params.format_list,
+							    field_size,
+							    right_justify,
+							    suffix);
 			else if (!xstrcasecmp(token, "delayboot"))
 				job_format_add_delay_boot(params.format_list,
 							  field_size,
@@ -1222,6 +1234,11 @@ extern int parse_long_format( char* format_long )
 							params.format_list,
 							field_size,
 							right_justify, suffix);
+			else if (!xstrcasecmp(token, "prefer"))
+				job_format_add_prefer(params.format_list,
+						      field_size,
+						      right_justify,
+						      suffix);
 			else if (!xstrcasecmp(token, "arrayjobid"))
 				job_format_add_array_job_id(
 					params.format_list,
@@ -1360,12 +1377,6 @@ extern int parse_long_format( char* format_long )
 							    field_size,
 							    right_justify,
 							    suffix );
-			else if (!xstrcasecmp(token, "selectjobinfo"))
-				job_format_add_select_jobinfo(
-					params.format_list,
-					field_size,
-					right_justify,
-					suffix );
 			else if (!xstrcasecmp(token, "starttime"))
 				job_format_add_time_start( params.format_list,
 							   field_size,
@@ -1858,7 +1869,9 @@ _print_options(void)
 	printf( "users       = %s\n", params.users );
 	printf( "verbose     = %d\n", params.verbose );
 
-	if ((params.verbose > 1) && params.job_list) {
+	if (params.verbose <= 1)
+		goto endit;
+	if (params.job_list) {
 		i = 0;
 		iterator = list_iterator_create( params.job_list );
 		while ( (job_step_id = list_next( iterator )) ) {
@@ -1875,7 +1888,7 @@ _print_options(void)
 	}
 
 
-	if ((params.verbose > 1) && params.name_list) {
+	if (params.name_list) {
 		i = 0;
 		iterator = list_iterator_create( params.name_list );
 		while ( (name = list_next( iterator )) ) {
@@ -1884,7 +1897,7 @@ _print_options(void)
 		list_iterator_destroy( iterator );
 	}
 
-	if ((params.verbose > 1) && params.licenses_list) {
+	if (params.licenses_list) {
 		i = 0;
 		iterator = list_iterator_create( params.licenses_list );
 		while ( (license = list_next( iterator )) ) {
@@ -1893,7 +1906,7 @@ _print_options(void)
 		list_iterator_destroy( iterator );
 	}
 
-	if ((params.verbose > 1) && params.part_list) {
+	if (params.part_list) {
 		i = 0;
 		iterator = list_iterator_create( params.part_list );
 		while ( (part = list_next( iterator )) ) {
@@ -1902,7 +1915,9 @@ _print_options(void)
 		list_iterator_destroy( iterator );
 	}
 
-	if ((params.verbose > 1) && params.state_list) {
+	if (params.all_states) {
+		printf( "state_list = all\n");
+	} else if (params.state_list) {
 		i = 0;
 		iterator = list_iterator_create( params.state_list );
 		while ( (state_id = list_next( iterator )) ) {
@@ -1912,7 +1927,7 @@ _print_options(void)
 		list_iterator_destroy( iterator );
 	}
 
-	if ((params.verbose > 1) && params.step_list) {
+	if (params.step_list) {
 		char tmp_char[34];
 		i = 0;
 		iterator = list_iterator_create( params.step_list );
@@ -1939,7 +1954,7 @@ _print_options(void)
 		list_iterator_destroy( iterator );
 	}
 
-	if ((params.verbose > 1) && params.user_list) {
+	if (params.user_list) {
 		i = 0;
 		iterator = list_iterator_create( params.user_list );
 		while ( (user = list_next( iterator )) ) {
@@ -1947,7 +1962,7 @@ _print_options(void)
 		}
 		list_iterator_destroy( iterator );
 	}
-
+endit:
 	printf( "-----------------------------\n\n\n" );
 } ;
 
@@ -2032,8 +2047,11 @@ _build_state_list( char* str )
 
 	if (str == NULL)
 		return NULL;
-	if (xstrcasecmp( str, "all") == 0)
-		return _build_all_states_list ();
+	if (!xstrcasecmp(str, "all")) {
+		params.all_states = true;
+		return NULL;
+	}
+	params.all_states = false;
 
 	my_list = list_create(NULL);
 	my_state_list = xstrdup(str);
@@ -2046,38 +2064,6 @@ _build_state_list( char* str )
 		state = strtok_r(NULL, ",", &tmp_char);
 	}
 	xfree(my_state_list);
-	return my_list;
-
-}
-
-static void _append_state_list(List my_list, uint32_t state_id)
-{
-	uint32_t *state_rec;
-
-	state_rec = xmalloc(sizeof(uint32_t));
-	*state_rec = state_id;
-	list_append(my_list, state_rec);
-}
-
-/*
- * _build_all_states_list - build a list containing all possible job states
- * RET List of uint16_t values
- */
-static List
-_build_all_states_list( void )
-{
-	List my_list;
-	uint32_t i;
-
-	my_list = list_create( NULL );
-	for (i = 0; i < JOB_END; i++)
-		_append_state_list(my_list, i);
-
-	_append_state_list(my_list, JOB_COMPLETING);
-	_append_state_list(my_list, JOB_CONFIGURING);
-	_append_state_list(my_list, JOB_REVOKED);
-	_append_state_list(my_list, JOB_SPECIAL_EXIT);
-
 	return my_list;
 
 }

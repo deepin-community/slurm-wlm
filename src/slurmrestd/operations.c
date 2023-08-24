@@ -45,6 +45,7 @@
 #include "src/common/xassert.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
+#include "src/interfaces/serializer.h"
 
 #include "src/slurmrestd/operations.h"
 #include "src/slurmrestd/rest_auth.h"
@@ -54,6 +55,7 @@ static pthread_rwlock_t paths_lock = PTHREAD_RWLOCK_INITIALIZER;
 static List paths = NULL;
 
 #define MAGIC 0xDFFEAAAE
+#define MAGIC_HEADER_ACCEPT 0xDF9EAABE
 
 typedef struct {
 	int magic;
@@ -66,6 +68,7 @@ typedef struct {
 } path_t;
 
 typedef struct {
+	int magic; /* MAGIC_HEADER_ACCEPT */
 	char *type; /* mime type and sub type unchanged */
 	float q; /* quality factor (priority) */
 } http_header_accept_t;
@@ -146,7 +149,9 @@ extern int bind_operation_handler(const char *str_path,
 		goto exists;
 
 	/* add new path */
-	debug4("%s: new path %s with tag %d", __func__, str_path, path_tag);
+	debug4("%s: new path %s with path_tag %d callback_tag %d",
+	       __func__, str_path, path_tag, callback_tag);
+	print_path_tag_methods(openapi_state, path_tag);
 
 	path = xmalloc(sizeof(*path));
 	path->magic = MAGIC;
@@ -244,8 +249,13 @@ static int _resolve_path(on_http_request_args_t *args, int *path_tag,
 			args,
 			"Unable find requested URL. Please view /openapi/v3 for API reference.",
 			HTTP_STATUS_CODE_ERROR_NOT_FOUND, NULL);
-
-	return SLURM_SUCCESS;
+	else if (*path_tag == -2)
+		return _operations_router_reject(
+			args,
+			"Requested REST method is not defined at URL. Please view /openapi/v3 for API reference.",
+			HTTP_STATUS_CODE_ERROR_METHOD_NOT_ALLOWED, NULL);
+	else
+		return SLURM_SUCCESS;
 }
 
 static int _get_query(on_http_request_args_t *args, data_t **query,
@@ -255,13 +265,12 @@ static int _get_query(on_http_request_args_t *args, data_t **query,
 
 	/* post will have query in the body otherwise it is in the URL */
 	if (args->method == HTTP_REQUEST_POST)
-		rc = data_g_deserialize(query, args->body,
-				      args->body_length,
-				      read_mime);
+		rc = serialize_g_string_to_data(query, args->body,
+						args->body_length, read_mime);
 	else
-		rc = data_g_deserialize(query, args->query,
-				      (args->query ? strlen(args->query) : 0),
-				      read_mime);
+		rc = serialize_g_string_to_data(
+			query, args->query,
+			(args->query ? strlen(args->query) : 0), read_mime);
 
 	if (rc || !*query)
 		return _operations_router_reject(
@@ -278,6 +287,7 @@ static void _parse_http_accept_entry(char *entry, List l)
 	char *token = NULL;
 	char *buffer = xstrdup(entry);
 	http_header_accept_t *act = xmalloc(sizeof(*act));
+	act->magic = MAGIC_HEADER_ACCEPT;
 	act->type = NULL;
 	act->q = 1; /* default to 1 per rfc7231:5.3.1 */
 
@@ -301,8 +311,13 @@ static void _parse_http_accept_entry(char *entry, List l)
 
 static int _compare_q(void *x, void *y)
 {
-	http_header_accept_t *xobj = (http_header_accept_t *) x;
-	http_header_accept_t *yobj = (http_header_accept_t *) y;
+	http_header_accept_t **xobj_ptr = x;
+	http_header_accept_t **yobj_ptr = y;
+	http_header_accept_t *xobj = *xobj_ptr;
+	http_header_accept_t *yobj = *yobj_ptr;
+
+	xassert(xobj->magic == MAGIC_HEADER_ACCEPT);
+	xassert(yobj->magic == MAGIC_HEADER_ACCEPT);
 
 	if (xobj->q < yobj->q)
 		return -1;
@@ -318,6 +333,9 @@ static void _http_accept_list_delete(void *x)
 
 	if (!obj)
 		return;
+
+	xassert(obj->magic == MAGIC_HEADER_ACCEPT);
+	obj->magic = ~MAGIC_HEADER_ACCEPT;
 
 	xfree(obj->type);
 	xfree(obj);
@@ -364,11 +382,13 @@ static int _resolve_mime(on_http_request_args_t *args, const char **read_mime,
 		http_header_accept_t *ptr = NULL;
 		ListIterator itr = list_iterator_create(accept);
 		while ((ptr = list_next(itr))) {
+			xassert(ptr->magic == MAGIC_HEADER_ACCEPT);
+
 			debug4("%s: [%s] accepts %s with q=%f",
 			       __func__, args->context->con->name, ptr->type,
 			       ptr->q);
 
-			if ((*write_mime = data_resolve_mime_type(ptr->type))) {
+			if ((*write_mime = resolve_mime_type(ptr->type))) {
 				debug4("%s: [%s] found accepts %s=%s with q=%f",
 				       __func__, args->context->con->name,
 				       ptr->type, *write_mime, ptr->q);
@@ -380,7 +400,7 @@ static int _resolve_mime(on_http_request_args_t *args, const char **read_mime,
 			}
 		}
 		list_iterator_destroy(itr);
-		list_destroy(accept);
+		FREE_NULL_LIST(accept);
 	} else {
 		debug3("%s: [%s] Accept header not specified. Defaulting to JSON.",
 		       __func__, args->context->con->name);
@@ -431,13 +451,24 @@ static int _call_handler(on_http_request_args_t *args, data_t *params,
 	int rc;
 	data_t *resp = data_new();
 	char *body = NULL;
+	http_status_code_t e;
+
+	debug3("%s: [%s] BEGIN: calling handler: 0x%"PRIXPTR"[%d] for path: %s",
+	       __func__, args->context->con->name, (uintptr_t) callback,
+	       callback_tag, args->path);
 
 	rc = callback(args->context->con->name, args->method, params, query,
 		      callback_tag, resp, args->context->auth);
 
+	/*
+	 * Clear auth context after callback is complete. Client has to provide
+	 * full auth for every request already.
+	 */
+	FREE_NULL_REST_AUTH(args->context->auth);
+
 	if (data_get_type(resp) != DATA_TYPE_NULL) {
-		int rc2 = data_g_serialize(&body, resp, write_mime,
-					   DATA_SER_FLAGS_PRETTY);
+		int rc2 = serialize_g_data_to_string(
+			&body, NULL, resp, write_mime, SER_FLAGS_PRETTY);
 
 		if (!rc)
 			rc = rc2;
@@ -456,13 +487,13 @@ static int _call_handler(on_http_request_args_t *args, data_t *params,
 			.http_minor = args->http_minor,
 			.status_code = HTTP_STATUS_CODE_REDIRECT_NOT_MODIFIED,
 		};
-
+		e = send_args.status_code;
 		rc = send_http_response(&send_args);
-	} else if (rc) {
-		http_status_code_t e = HTTP_STATUS_CODE_SRVERR_INTERNAL;
+	} else if (rc && (rc != ESLURM_REST_EMPTY_RESULT)) {
+		e = HTTP_STATUS_CODE_SRVERR_INTERNAL;
 
 		if (rc == ESLURM_REST_INVALID_QUERY)
-			e = HTTP_STATUS_CODE_ERROR_BAD_REQUEST;
+			e = HTTP_STATUS_CODE_ERROR_UNPROCESSABLE_CONTENT;
 		else if (rc == ESLURM_REST_FAIL_PARSING)
 			e = HTTP_STATUS_CODE_ERROR_BAD_REQUEST;
 		else if (rc == ESLURM_REST_INVALID_JOBS_DESC)
@@ -488,7 +519,13 @@ static int _call_handler(on_http_request_args_t *args, data_t *params,
 		}
 
 		rc = send_http_response(&send_args);
+		e = send_args.status_code;
 	}
+
+	debug3("%s: [%s] END: calling handler: (0x%"PRIXPTR") callback_tag %d for path: %s rc[%d]=%s status[%d]=%s",
+	       __func__, args->context->con->name, (uintptr_t) callback,
+	       callback_tag, args->path, rc, slurm_strerror(rc), e,
+	       get_http_status_code_string(e));
 
 	xfree(body);
 	FREE_NULL_DATA(resp);
@@ -524,7 +561,7 @@ extern int operations_router(on_http_request_args_t *args)
 
 	params = data_set_dict(data_new());
 	if ((rc = _resolve_path(args, &path_tag, params)))
-	    return rc;
+		goto cleanup;
 
 	/*
 	 * Hold read lock while the callback is executing to avoid
@@ -559,8 +596,7 @@ cleanup:
 	FREE_NULL_DATA(params);
 
 	/* always clear the auth context */
-	rest_auth_g_free(args->context->auth);
-	args->context->auth = NULL;
+	FREE_NULL_REST_AUTH(args->context->auth);
 
 	return rc;
 }

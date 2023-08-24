@@ -49,6 +49,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "src/common/fetch_config.h"
 #include "src/common/hostlist.h"
 #include "src/common/log.h"
 #include "src/common/macros.h"
@@ -56,9 +57,12 @@
 #include "src/common/parse_config.h"
 #include "src/common/parse_value.h"
 #include "src/common/read_config.h"
+#include "src/common/run_in_daemon.h"
+#include "src/common/slurm_protocol_defs.h"
 #include "src/common/slurm_protocol_interface.h"
 #include "src/common/xassert.h"
 #include "src/common/xmalloc.h"
+#include "src/common/xregex.h"
 #include "src/common/xstring.h"
 
 #include "slurm/slurm.h"
@@ -118,6 +122,8 @@ typedef struct _expline_values_st {
 	s_p_hashtbl_t**	values;
 } _expline_values_t;
 
+List conf_includes_list = NULL;
+
 static bool _run_in_daemon(void)
 {
 	static bool run = false, set = false;
@@ -169,12 +175,16 @@ static s_p_values_t *_conf_hashtbl_lookup(const s_p_hashtbl_t *tbl,
 	return NULL;
 }
 
-s_p_hashtbl_t *s_p_hashtbl_create(const s_p_options_t options[])
+s_p_hashtbl_t *s_p_hashtbl_create_cnt(const s_p_options_t options[], int *cnt)
 {
 	s_p_hashtbl_t *tbl = xmalloc(sizeof(*tbl));
 
+	if (cnt)
+		*cnt = 0;
 	for (const s_p_options_t *op = options; op->key; op++) {
 		s_p_values_t *value = xmalloc(sizeof(*value));
+		if (cnt)
+			(*cnt)++;
 		value->key = xstrdup(op->key);
 		value->operator = S_P_OPERATOR_SET;
 		value->type = op->type;
@@ -200,6 +210,11 @@ s_p_hashtbl_t *s_p_hashtbl_create(const s_p_options_t options[])
 		fatal("keyvalue regex compilation failed");
 
 	return tbl;
+}
+
+extern s_p_hashtbl_t *s_p_hashtbl_create(const s_p_options_t options[])
+{
+	return s_p_hashtbl_create_cnt(options, NULL);
 }
 
 /* Swap the data in two data structures without changing the linked list
@@ -298,6 +313,7 @@ static int _keyvalue_regex(s_p_hashtbl_t *tbl, const char *line,
 	size_t nmatch = 8;
 	regmatch_t pmatch[8];
 	char op;
+	int rc;
 
 	*key = NULL;
 	*value = NULL;
@@ -305,8 +321,12 @@ static int _keyvalue_regex(s_p_hashtbl_t *tbl, const char *line,
 	*operator = S_P_OPERATOR_SET;
 	memset(pmatch, 0, sizeof(regmatch_t)*nmatch);
 
-	if (regexec(&tbl->keyvalue_re, line, nmatch, pmatch, 0) == REG_NOMATCH)
+	if ((rc = regexec(&tbl->keyvalue_re, line, nmatch, pmatch, 0))) {
+		if (rc != REG_NOMATCH)
+			dump_regex_error(rc, &tbl->keyvalue_re, "regexec(%s)",
+					 line);
 		return -1;
+	}
 
 	*key = (char *)(xstrndup(line + pmatch[1].rm_so,
 				 pmatch[1].rm_eo - pmatch[1].rm_so));
@@ -1049,25 +1069,6 @@ static int _parse_next_key(s_p_hashtbl_t *hashtbl,
 	return 1;
 }
 
-static char * _add_full_path(char *file_name, char *slurm_conf_path)
-{
-	char *path_name = NULL, *slash;
-
-	if ((file_name == NULL) || (file_name[0] == '/')) {
-		path_name = xstrdup(file_name);
-		return path_name;
-	}
-
-	path_name = xstrdup(slurm_conf_path);
-	slash = strrchr(path_name, '/');
-	if (slash)
-		slash[0] = '\0';
-	xstrcat(path_name, "/");
-	xstrcat(path_name, file_name);
-
-	return path_name;
-}
-
 static char *_parse_for_format(s_p_hashtbl_t *f_hashtbl, char *path)
 {
 	char *filename = xstrdup(path);
@@ -1104,6 +1105,57 @@ static char *_parse_for_format(s_p_hashtbl_t *f_hashtbl, char *path)
 }
 
 /*
+ * ListDelF for conf_includes_list
+ *
+ * IN/OUT: object (conf_includes_map_t *map)
+ */
+static void _delete_conf_includes(void *object)
+{
+	conf_includes_map_t *map = object;
+
+	if (map) {
+		xfree(map->conf_file);
+		FREE_NULL_LIST(map->include_list);
+		xfree(map);
+	}
+}
+
+/*
+ * Allocate memory for conf_includes_list if needed.
+ *
+ * Append the include_file to its appropriate conf_file mapping if found,
+ * otherwise create a map for conf_file <-> include_file and append it to
+ * conf_includes_list.
+ *
+ * IN: include_file to be appended.
+ * IN: conf_file where include_file belongs to.
+ */
+static void _handle_include(char *include_file, char *conf_file)
+{
+	conf_includes_map_t *map = NULL;
+
+	xassert(include_file);
+	xassert(conf_file);
+
+	if (!conf_includes_list)
+		conf_includes_list = list_create(_delete_conf_includes);
+
+	if (!(map = list_find_first_ro(conf_includes_list,
+				       find_map_conf_file,
+				       conf_file))) {
+		map = xmalloc(sizeof(*map));
+		map->conf_file = xstrdup(conf_file);
+		map->include_list = list_create(xfree_ptr);
+		list_append(map->include_list, xstrdup(include_file));
+		list_append(conf_includes_list, map);
+	} else if (!list_find_first_ro(map->include_list,
+				       slurm_find_char_exact_in_list,
+				       include_file)) {
+		list_append(map->include_list, xstrdup(include_file));
+	}
+}
+
+/*
  * Returns 1 if the line contained an include directive and the included
  * file was parsed without error.  Returns -1 if the line was an include
  * directive but the included file contained errors.  Returns 0 if
@@ -1111,13 +1163,15 @@ static char *_parse_for_format(s_p_hashtbl_t *f_hashtbl, char *path)
  */
 static int _parse_include_directive(s_p_hashtbl_t *hashtbl, uint32_t *hash_val,
 				    const char *line, char **leftover,
-				    bool ignore_new, char *slurm_conf_path)
+				    bool ignore_new, char *slurm_conf_path,
+				    char *last_ancestor, bool check_permissions)
 {
 	char *ptr;
 	char *fn_start, *fn_stop;
 	char *file_name, *path_name;
 	char *file_with_mod;
 	int rc;
+	struct stat temp;
 
 	*leftover = NULL;
 	if (xstrncasecmp("include", line, strlen("include")) == 0) {
@@ -1137,21 +1191,36 @@ static int _parse_include_directive(s_p_hashtbl_t *hashtbl, uint32_t *hash_val,
 		xfree(file_with_mod);
 		if (!file_name)	/* Error printed by _parse_for_format() */
 			return -1;
-		path_name = _add_full_path(file_name, slurm_conf_path);
-		xfree(file_name);
-		rc = s_p_parse_file(hashtbl, hash_val, path_name, ignore_new);
+		path_name = get_extra_conf_path(file_name);
+
+		stat(path_name, &temp);
+		if ((check_permissions) &&
+		   ((temp.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO)) != 0600))
+			fatal("Included file %s at %s should be 600 is %o accessible for group or others",
+			      file_name,
+			      path_name,
+			      temp.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO));
+		if (!last_ancestor)
+			last_ancestor = xbasename(slurm_conf_path);
+		rc = s_p_parse_file(hashtbl, hash_val, path_name, ignore_new,
+				    last_ancestor, check_permissions);
 		xfree(path_name);
-		if (rc == SLURM_SUCCESS)
+		if (rc == SLURM_SUCCESS) {
+			if (!xstrstr(file_name, "/") && running_in_slurmctld())
+				_handle_include(file_name, last_ancestor);
+			xfree(file_name);
 			return 1;
-		else
+		} else {
+			xfree(file_name);
 			return -1;
+		}
 	} else {
 		return 0;
 	}
 }
 
 int s_p_parse_file(s_p_hashtbl_t *hashtbl, uint32_t *hash_val, char *filename,
-		   bool ignore_new)
+		   bool ignore_new, char *last_ancestor, bool check_permissions)
 {
 	FILE *f;
 	char *leftover = NULL;
@@ -1169,9 +1238,8 @@ int s_p_parse_file(s_p_hashtbl_t *hashtbl, uint32_t *hash_val, char *filename,
 
 	for (i = 0; ; i++) {
 		if (i == 1) {	/* Long once, on first retry */
-			error("s_p_parse_file: unable to status file %s: %m, "
-			      "retrying in 1sec up to 60sec",
-			      filename);
+			error("%s: cannot stat file %s: %m, retrying in 1sec up to 60sec",
+			      __func__, filename);
 		}
 		if (i >= 60)	/* Give up after 60 seconds */
 			return SLURM_ERROR;
@@ -1204,7 +1272,8 @@ int s_p_parse_file(s_p_hashtbl_t *hashtbl, uint32_t *hash_val, char *filename,
 
 		inc_rc = _parse_include_directive(hashtbl, hash_val,
 						  line, &leftover, ignore_new,
-						  filename);
+						  filename, last_ancestor,
+						  check_permissions);
 		if (inc_rc == 0) {
 			if (!_parse_next_key(hashtbl, line, &leftover,
 					     ignore_new)) {
@@ -2185,6 +2254,15 @@ extern buf_t *s_p_pack_hashtbl(const s_p_hashtbl_t *hashtbl,
 			continue;
 
 		switch (options[i].type) {
+		case S_P_ARRAY:
+			if (options[i].pack) {
+				pack32(p->data_count, buffer);
+				void **ptr_array = (void **)p->data;
+				for (int j = 0; j < p->data_count; j++) {
+					options[i].pack(ptr_array[j], buffer);
+				}
+			}
+			break;
 		case S_P_STRING:
 		case S_P_PLAIN_STRING:
 			packstr((char *)p->data, buffer);
@@ -2226,7 +2304,8 @@ extern buf_t *s_p_pack_hashtbl(const s_p_hashtbl_t *hashtbl,
 /*
  * Given a buffer, unpack key, type, op and value into a hashtbl.
  */
-extern s_p_hashtbl_t *s_p_unpack_hashtbl(buf_t *buffer)
+extern s_p_hashtbl_t *s_p_unpack_hashtbl_full(buf_t *buffer,
+					      const s_p_options_t options[])
 {
 	s_p_values_t *value = NULL;
 	s_p_hashtbl_t *hashtbl = NULL;
@@ -2261,6 +2340,21 @@ extern s_p_hashtbl_t *s_p_unpack_hashtbl(buf_t *buffer)
 			continue;
 
 		switch (value->type) {
+		case S_P_ARRAY:
+			xassert(options);
+			if (options[i].unpack) {
+				void **ptr_array;
+				safe_unpack32(&uint32_tmp, buffer);
+				value->data_count = uint32_tmp;
+				value->data = xcalloc(value->data_count,
+						      sizeof(void *));
+				ptr_array = (void **)value->data;
+				for (int j = 0; j < value->data_count; j++) {
+					ptr_array[j] =
+						options[i].unpack(buffer);
+				}
+			}
+			break;
 		case S_P_STRING:
 		case S_P_PLAIN_STRING:
 			safe_unpackstr_xmalloc(&tmp_char, &uint32_tmp, buffer);
@@ -2320,6 +2414,11 @@ unpack_error:
 	s_p_hashtbl_destroy(hashtbl);
 	error("%s: failed", __func__);
 	return NULL;
+}
+
+extern s_p_hashtbl_t *s_p_unpack_hashtbl(buf_t *buffer)
+{
+	return s_p_unpack_hashtbl_full(buffer, NULL);
 }
 
 extern void transfer_s_p_options(s_p_options_t **full_options,

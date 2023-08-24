@@ -2,10 +2,8 @@
  *  burst_buffer_common.c - Common logic for managing burst_buffers
  *
  *  NOTE: These functions are designed so they can be used by multiple burst
- *  buffer plugins at the same time (e.g. you might provide users access to
- *  both burst_buffer/datawarp and burst_buffer/generic on the same system),
- *  so the state information is largely in the individual plugin and passed
- *  as a pointer argument to these functions.
+ *  buffer plugins at the same time, so the state information is largely in the
+ *  individual plugin and passed as a pointer argument to these functions.
  *****************************************************************************
  *  Copyright (C) 2014-2015 SchedMD LLC.
  *  Written by Morris Jette <jette@schedmd.com>
@@ -67,7 +65,7 @@
 #include "src/common/pack.h"
 #include "src/common/parse_config.h"
 #include "src/common/run_command.h"
-#include "src/common/slurm_accounting_storage.h"
+#include "src/interfaces/accounting_storage.h"
 #include "src/common/slurm_protocol_api.h"
 #include "src/common/timers.h"
 #include "src/common/uid.h"
@@ -137,60 +135,6 @@ static char *_print_users(uid_t *buf)
 		xfree(user_elem);
 	}
 	return user_str;
-}
-
-extern void bb_add_bb_to_script(char **script_body,
-				const char *burst_buffer_file)
-{
-	char *orig_script = *script_body;
-	char *new_script, *sep, save_char;
-	char *bb_opt = NULL;
-	int i;
-
-	if (!burst_buffer_file || (burst_buffer_file[0] == '\0'))
-		return;	/* No burst buffer file or empty file */
-
-	if (!orig_script) {
-		*script_body = xstrdup(burst_buffer_file);
-		return;
-	}
-
-	bb_opt = xstrdup(burst_buffer_file);
-	i = strlen(bb_opt) - 1;
-	if (bb_opt[i] != '\n')	/* Append new line as needed */
-		xstrcat(bb_opt, "\n");
-
-	if (orig_script[0] != '#') {
-		/* Prepend burst buffer file */
-		new_script = xstrdup(bb_opt);
-		xstrcat(new_script, orig_script);
-		xfree(*script_body);
-		*script_body = new_script;
-		xfree(bb_opt);
-		return;
-	}
-
-	sep = strchr(orig_script, '\n');
-	if (sep) {
-		save_char = sep[1];
-		sep[1] = '\0';
-		new_script = xstrdup(orig_script);
-		xstrcat(new_script, bb_opt);
-		sep[1] = save_char;
-		xstrcat(new_script, sep + 1);
-		xfree(*script_body);
-		*script_body = new_script;
-		xfree(bb_opt);
-		return;
-	} else {
-		new_script = xstrdup(orig_script);
-		xstrcat(new_script, "\n");
-		xstrcat(new_script, bb_opt);
-		xfree(*script_body);
-		*script_body = new_script;
-		xfree(bb_opt);
-		return;
-	}
 }
 
 /* Allocate burst buffer hash tables */
@@ -633,7 +577,8 @@ extern void bb_load_config(bb_state_t *state_ptr, char *plugin_type)
 	}
 
 	bb_hashtbl = s_p_hashtbl_create(bb_options);
-	if (s_p_parse_file(bb_hashtbl, NULL, bb_conf, false) == SLURM_ERROR) {
+	if (s_p_parse_file(bb_hashtbl, NULL, bb_conf, false, NULL, false)
+	    == SLURM_ERROR) {
 		fatal("%s: something wrong with opening/reading %s: %m",
 		      __func__, bb_conf);
 	}
@@ -818,6 +763,18 @@ static void _pack_alloc(struct bb_alloc *bb_alloc, buf_t *buffer,
 		pack16(bb_alloc->state,         buffer);
 		pack32(bb_alloc->user_id,       buffer);
 	}
+}
+
+/* Return true if hetjob separator in the script */
+static bool _hetjob_check(char *tok)
+{
+	if (xstrncmp(tok + 1, "SLURM",  5) &&
+	    xstrncmp(tok + 1, "SBATCH", 6))
+		return false;
+	if (!xstrstr(tok + 6, "packjob") &&
+	    !xstrstr(tok + 6, "hetjob"))
+		return false;
+	return true;
 }
 
 /* Pack individual burst buffer records into a buffer */
@@ -1206,6 +1163,7 @@ extern bb_alloc_t *bb_alloc_job_rec(bb_state_t *state_ptr,
 	bb_alloc->state_time = time(NULL);
 	bb_alloc->seen_time = time(NULL);
 	bb_alloc->user_id = job_ptr->user_id;
+	bb_alloc->group_id = job_ptr->group_id;
 
 	return bb_alloc;
 }
@@ -1221,6 +1179,65 @@ extern bb_alloc_t *bb_alloc_job(bb_state_t *state_ptr, job_record_t *job_ptr,
 	bb_alloc = bb_alloc_job_rec(state_ptr, job_ptr, bb_job);
 
 	return bb_alloc;
+}
+
+extern int bb_build_bb_script(job_record_t *job_ptr, char *script_file)
+{
+	char *out_buf = NULL;
+	int rc;
+
+	xstrcat(out_buf, "#!/bin/bash\n");
+	xstrcat(out_buf, job_ptr->burst_buffer);
+	rc = bb_write_file(script_file, out_buf);
+	xfree(out_buf);
+
+	return rc;
+}
+
+extern char *bb_common_build_het_job_script(char *script,
+					    uint32_t het_job_offset,
+					    bool (*is_directive) (char *tok))
+{
+	char *result = NULL, *tmp = NULL;
+	char *tok, *save_ptr = NULL;
+	bool fini = false;
+	int cur_offset = 0;
+
+	tmp = xstrdup(script);
+	tok = strtok_r(tmp, "\n", &save_ptr);
+	while (tok) {
+		if (!result) {
+			xstrfmtcat(result, "%s\n", tok);
+		} else if (tok[0] != '#') {
+			fini = true;
+		} else if (_hetjob_check(tok)) {
+			cur_offset++;
+			if (cur_offset > het_job_offset)
+				fini = true;
+		} else if (cur_offset == het_job_offset) {
+			xstrfmtcat(result, "%s\n", tok);
+		}
+		if (fini)
+			break;
+		tok = strtok_r(NULL, "\n", &save_ptr);
+	}
+
+	if (het_job_offset == 0) {
+		while (tok) {
+			char *sep = "";
+			if (is_directive(tok)) {
+				sep = "#EXCLUDED ";
+				tok++;
+			}
+			xstrfmtcat(result, "%s%s\n", sep, tok);
+			tok = strtok_r(NULL, "\n", &save_ptr);
+		}
+	} else if (result) {
+		xstrcat(result, "exit 0\n");
+	}
+	xfree(tmp);
+
+	return result;
 }
 
 /* Free memory associated with allocated bb record, caller is responsible for
@@ -2044,7 +2061,7 @@ extern bool bb_valid_pool_test(bb_state_t *state_ptr, char *pool_name)
 
 extern int bb_write_file(char *file_name, char *buf)
 {
-	int amount, fd, nwrite, pos;
+	int fd, nwrite;
 
 	(void) unlink(file_name);
 	fd = creat(file_name, 0600);
@@ -2059,20 +2076,15 @@ extern int bb_write_file(char *file_name, char *buf)
 	}
 
 	nwrite = strlen(buf);
-	pos = 0;
-	while (nwrite > 0) {
-		amount = write(fd, &buf[pos], nwrite);
-		if ((amount < 0) && (errno != EINTR)) {
-			error("Error writing file %s, %m", file_name);
-			close(fd);
-			return ESLURM_WRITING_TO_FILE;
-		}
-		nwrite -= amount;
-		pos    += amount;
-	}
+	safe_write(fd, buf, nwrite);
 
 	(void) close(fd);
 	return SLURM_SUCCESS;
+
+rwfail:
+	error("Error writing file %s: %m", file_name);
+	(void) close(fd);
+	return SLURM_ERROR;
 }
 
 extern int bb_write_nid_file(char *file_name, char *node_list,

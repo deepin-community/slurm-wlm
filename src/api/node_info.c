@@ -49,11 +49,11 @@
 
 #include "slurm/slurm.h"
 
-#include "src/common/node_select.h"
 #include "src/common/parse_time.h"
-#include "src/common/slurm_acct_gather_energy.h"
-#include "src/common/slurm_auth.h"
-#include "src/common/slurm_ext_sensors.h"
+#include "src/interfaces/select.h"
+#include "src/interfaces/acct_gather_energy.h"
+#include "src/interfaces/auth.h"
+#include "src/interfaces/ext_sensors.h"
 #include "src/common/slurm_protocol_api.h"
 #include "src/common/slurm_resource_info.h"
 #include "src/common/uid.h"
@@ -88,7 +88,7 @@ slurm_print_node_info_msg ( FILE * out, node_info_msg_t * node_info_msg_ptr,
 {
 	int i;
 	node_info_t * node_ptr = node_info_msg_ptr -> node_array ;
-	char time_str[32];
+	char time_str[256];
 
 	slurm_make_time_str ((time_t *)&node_info_msg_ptr->last_update,
 			     time_str, sizeof(time_str));
@@ -178,7 +178,7 @@ slurm_populate_node_partitions(node_info_msg_t *node_buffer_ptr,
 char *slurm_sprint_node_table(node_info_t *node_ptr, int one_liner)
 {
 	uint32_t my_state = node_ptr->node_state;
-	char time_str[32];
+	char time_str[256];
 	char *out = NULL, *reason_str = NULL, *complete_state = NULL;
 	uint16_t alloc_cpus = 0;
 	int idle_cpus;
@@ -190,9 +190,9 @@ char *slurm_sprint_node_table(node_info_t *node_ptr, int one_liner)
 				  SELECT_NODEDATA_SUBCNT,
 				  NODE_STATE_ALLOCATED,
 				  &alloc_cpus);
-	idle_cpus = node_ptr->cpus - alloc_cpus;
+	idle_cpus = node_ptr->cpus_efctv - alloc_cpus;
 
-	if (idle_cpus  && (idle_cpus != node_ptr->cpus)) {
+	if (idle_cpus  && (idle_cpus != node_ptr->cpus_efctv)) {
 		my_state &= NODE_STATE_FLAGS;
 		my_state |= NODE_STATE_MIXED;
 	}
@@ -214,8 +214,8 @@ char *slurm_sprint_node_table(node_info_t *node_ptr, int one_liner)
 	xstrcat(out, line_end);
 
 	/****** Line ******/
-	xstrfmtcat(out, "CPUAlloc=%u CPUTot=%u ",
-		   alloc_cpus, node_ptr->cpus);
+	xstrfmtcat(out, "CPUAlloc=%u CPUEfctv=%u CPUTot=%u ",
+		   alloc_cpus, node_ptr->cpus_efctv, node_ptr->cpus);
 
 	if (node_ptr->cpu_load == NO_VAL)
 		xstrcat(out, "CPULoad=N/A");
@@ -379,7 +379,14 @@ char *slurm_sprint_node_table(node_info_t *node_ptr, int one_liner)
 	/****** Line ******/
 	slurm_make_time_str((time_t *)&node_ptr->last_busy, time_str,
 			    sizeof(time_str));
-	xstrfmtcat(out, "LastBusyTime=%s", time_str);
+	xstrfmtcat(out, "LastBusyTime=%s ", time_str);
+	if (node_ptr->resume_after) {
+		slurm_make_time_str((time_t *)&node_ptr->resume_after, time_str,
+				    sizeof(time_str));
+		xstrfmtcat(out, "ResumeAfterTime=%s", time_str);
+	} else {
+		xstrcat(out, "ResumeAfterTime=None");
+	}
 	xstrcat(out, line_end);
 
 	/****** TRES Line ******/
@@ -473,6 +480,12 @@ char *slurm_sprint_node_table(node_info_t *node_ptr, int one_liner)
 		xstrfmtcat(out, "Extra=%s", node_ptr->extra);
 	}
 
+	/****** Line (optional) ******/
+	if (node_ptr->resv_name) {
+		xstrcat(out, line_end);
+		xstrfmtcat(out, "ReservationName=%s", node_ptr->resv_name);
+	}
+
 	if (one_liner)
 		xstrcat(out, "\n");
 	else
@@ -495,7 +508,7 @@ static void _set_node_mixed(node_info_msg_t *resp)
 		select_g_select_nodeinfo_get(node_ptr->select_nodeinfo,
 					     SELECT_NODEDATA_SUBCNT,
 					     NODE_STATE_ALLOCATED, &used_cpus);
-		if ((used_cpus != 0) && (used_cpus != node_ptr->cpus)) {
+		if (used_cpus && (used_cpus != node_ptr->cpus_efctv)) {
 			node_ptr->node_state &= NODE_STATE_FLAGS;
 			node_ptr->node_state |= NODE_STATE_MIXED;
 		}
@@ -841,7 +854,7 @@ extern int slurm_get_node_energy(char *host, uint16_t context_id,
 		 *  Set request message address to slurmd on localhost
 		 */
 		gethostname_short(this_host, sizeof(this_host));
-		this_addr = slurm_conf_get_nodeaddr(this_host, NULL);
+		this_addr = slurm_conf_get_nodeaddr(this_host);
 		if (this_addr == NULL)
 			this_addr = xstrdup("localhost");
 		slurm_set_addr(&req_msg.address, slurm_conf.slurmd_port,
@@ -858,7 +871,7 @@ extern int slurm_get_node_energy(char *host, uint16_t context_id,
 
 	rc = slurm_send_recv_node_msg(&req_msg, &resp_msg, 0);
 
-	if (rc != 0 || !resp_msg.auth_cred) {
+	if (rc != SLURM_SUCCESS) {
 		error("slurm_get_node_energy: %m");
 		if (resp_msg.auth_cred)
 			auth_g_destroy(resp_msg.auth_cred);

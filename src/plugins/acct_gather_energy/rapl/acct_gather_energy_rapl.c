@@ -48,11 +48,12 @@
 #include <fcntl.h>
 #include <signal.h>
 #include "src/common/slurm_xlator.h"
-#include "src/common/slurm_acct_gather_energy.h"
+#include "src/interfaces/acct_gather_energy.h"
 #include "src/common/slurm_protocol_api.h"
 #include "src/common/slurm_protocol_defs.h"
 #include "src/common/fd.h"
-#include "src/slurmd/common/proctrack.h"
+#include "src/common/xstring.h"
+#include "src/interfaces/proctrack.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -133,7 +134,7 @@ static char hostname[HOST_NAME_MAX];
 
 static int nb_pkg = 0;
 
-static stepd_step_rec_t *job = NULL;
+static stepd_step_rec_t *step = NULL;
 
 extern void acct_gather_energy_p_conf_set(
 	int context_id_in, s_p_hashtbl_t *tbl);
@@ -215,7 +216,11 @@ static int _open_msr(int core)
 	int fd;
 
 	sprintf(msr_filename, "/dev/cpu/%d/msr", core);
-	fd = open(msr_filename, O_RDONLY);
+	/*
+	 * If this is loaded in the slurmd we need to make sure it
+	 * gets closed when a slurmstepd launches.
+	 */
+	fd = open(msr_filename, (O_RDONLY | O_CLOEXEC));
 
 	if (fd < 0) {
 		if ( errno == ENXIO ) {
@@ -224,12 +229,6 @@ static int _open_msr(int core)
 			error("CPU %d doesn't support MSRs", core);
 		} else
 			error("MSR register problem (%s): %m", msr_filename);
-	} else {
-		/*
-		 * If this is loaded in the slurmd we need to make sure it
-		 * gets closed when a slurmstepd launches.
-		 */
-		fd_set_close_on_exec(fd);
 	}
 
 	return fd;
@@ -469,20 +468,25 @@ extern int init(void)
 
 extern int fini(void)
 {
-	int i;
+	/*
+	 * We don't really want to destroy the the state, so those values
+	 * persist a reconfig. And if the process dies, this will be lost
+	 * anyway. So not freeing these variables is not really a leak.
+	 *
+	 * if (!running_in_slurmd_stepd())
+	 * 	return SLURM_SUCCESS;
+	 *
+	 * for (int i = 0; i < nb_pkg; i++) {
+	 * 	if (pkg_fd[i] != -1) {
+	 * 		close(pkg_fd[i]);
+	 * 		pkg_fd[i] = -1;
+	 * 	}
+	 * }
+	 *
+	 * acct_gather_energy_destroy(local_energy);
+	 * local_energy = NULL;
+	 */
 
-	if (!running_in_slurmd_stepd())
-		return SLURM_SUCCESS;
-
-	for (i = 0; i < nb_pkg; i++) {
-		if (pkg_fd[i] != -1) {
-			close(pkg_fd[i]);
-			pkg_fd[i] = -1;
-		}
-	}
-
-	acct_gather_energy_destroy(local_energy);
-	local_energy = NULL;
 	return SLURM_SUCCESS;
 }
 
@@ -545,7 +549,7 @@ extern int acct_gather_energy_p_set_data(enum acct_energy_type data_type,
 		break;
 	case ENERGY_DATA_STEP_PTR:
 		/* set global job if needed later */
-		job = (stepd_step_rec_t *)data;
+		step = (stepd_step_rec_t *)data;
 		break;
 	default:
 		error("acct_gather_energy_p_set_data: unknown enum %d",

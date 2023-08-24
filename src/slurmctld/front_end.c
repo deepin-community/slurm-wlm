@@ -282,7 +282,7 @@ extern bool avail_front_end(job_record_t *job_ptr)
  * update_front_end_msg_ptr IN change specification
  * RET SLURM_SUCCESS or error code
  */
-extern int update_front_end(update_front_end_msg_t *msg_ptr)
+extern int update_front_end(update_front_end_msg_t *msg_ptr, uid_t auth_uid)
 {
 #ifdef HAVE_FRONT_END
 	char  *this_node_name = NULL;
@@ -317,8 +317,7 @@ extern int update_front_end(update_front_end_msg_t *msg_ptr)
 					front_end_ptr->reason =
 						xstrdup(msg_ptr->reason);
 					front_end_ptr->reason_time = now;
-					front_end_ptr->reason_uid =
-						msg_ptr->reason_uid;
+					front_end_ptr->reason_uid = auth_uid;
 				}
 			} else if (msg_ptr->node_state == NODE_STATE_DOWN) {
 				set_front_end_down(front_end_ptr,
@@ -742,8 +741,8 @@ extern int dump_all_front_end_state(void)
 	xfree (new_file);
 	unlock_state_files ();
 
-	free_buf (buffer);
-	END_TIMER2("dump_all_front_end_state");
+	FREE_NULL_BUFFER(buffer);
+	END_TIMER2(__func__);
 	return error_code;
 #else
 	return SLURM_SUCCESS;
@@ -797,7 +796,7 @@ extern int load_all_front_end_state(bool state_only)
 		error("Can not recover front_end state, version incompatible");
 		error("*****************************************************");
 		xfree(ver_str);
-		free_buf(buffer);
+		FREE_NULL_BUFFER(buffer);
 		return EFAULT;
 	}
 	xfree(ver_str);
@@ -884,7 +883,7 @@ extern int load_all_front_end_state(bool state_only)
 	}
 
 fini:	info("Recovered state of %d front_end nodes", node_cnt);
-	free_buf (buffer);
+	FREE_NULL_BUFFER(buffer);
 	return error_code;
 
 unpack_error:

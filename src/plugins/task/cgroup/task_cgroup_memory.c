@@ -40,7 +40,7 @@
 #include "src/slurmd/slurmd/slurmd.h"
 
 #include "src/common/xstring.h"
-#include "src/common/cgroup.h"
+#include "src/interfaces/cgroup.h"
 
 #include "task_cgroup.h"
 
@@ -56,7 +56,7 @@ static float max_kmem_percent;	   /* Allowed Kernel memory percent*/
 static uint64_t max_kmem;       /* Upper bound for kmem.limit_in_bytes */
 static uint64_t max_ram;        /* Upper bound for memory.limit_in_bytes */
 static uint64_t max_swap;       /* Upper bound for swap */
-static uint64_t totalram;       /* Total real memory available on node */
+static uint64_t totalram;       /* Total RealMemory of node from slurm.conf */
 static uint64_t min_ram_space;  /* Don't constrain RAM below this value */
 static uint64_t min_kmem_space; /* Don't constrain Kernel mem below */
 
@@ -69,17 +69,8 @@ static uint64_t percent_in_bytes(uint64_t mb, float percent)
 
 extern int task_cgroup_memory_init(void)
 {
-	bool set_swappiness;
-	cgroup_limits_t limits;
-
 	if (cgroup_g_initialize(CG_MEMORY) != SLURM_SUCCESS)
 		return SLURM_ERROR;
-
-	set_swappiness = (slurm_cgroup_conf.memory_swappiness != NO_VAL64);
-	if (set_swappiness) {
-		limits.swappiness = slurm_cgroup_conf.memory_swappiness;
-		cgroup_g_root_constrain_set(CG_MEMORY, &limits);
-	}
 
 	constrain_kmem_space = slurm_cgroup_conf.constrain_kmem_space;
 	constrain_ram_space = slurm_cgroup_conf.constrain_ram_space;
@@ -100,7 +91,7 @@ extern int task_cgroup_memory_init(void)
 	allowed_kmem_space = slurm_cgroup_conf.allowed_kmem_space;
 	allowed_swap_space = slurm_cgroup_conf.allowed_swap_space;
 
-	if ((totalram = (uint64_t) conf->real_memory_size) == 0)
+	if ((totalram = (uint64_t) conf->conf_memory_size) == 0)
 		error ("Unable to get RealMemory size");
 
 	max_kmem = percent_in_bytes(totalram,
@@ -114,11 +105,10 @@ extern int task_cgroup_memory_init(void)
 	max_kmem_percent = slurm_cgroup_conf.max_kmem_percent;
 	min_kmem_space = slurm_cgroup_conf.min_kmem_space * 1024 * 1024;
 
-	debug("task/cgroup/memory: total:%"PRIu64"M allowed:%.4g%%(%s), "
+	debug("task/cgroup/memory: TotCfgRealMem:%"PRIu64"M allowed:%.4g%%(%s), "
 	      "swap:%.4g%%(%s), max:%.4g%%(%"PRIu64"M) "
 	      "max+swap:%.4g%%(%"PRIu64"M) min:%"PRIu64"M "
-	      "kmem:%.4g%%(%"PRIu64"M %s) min:%"PRIu64"M "
-	      "swappiness:%"PRIu64"(%s)",
+	      "kmem:%.4g%%(%"PRIu64"M %s) min:%"PRIu64"M ",
 	      totalram, allowed_ram_space,
 	      constrain_ram_space ? "enforced" : "permissive",
 	      allowed_swap_space,
@@ -131,9 +121,7 @@ extern int task_cgroup_memory_init(void)
 	      slurm_cgroup_conf.max_kmem_percent,
 	      (uint64_t) (max_kmem / (1024 * 1024)),
 	      constrain_kmem_space ? "enforced" : "permissive",
-	      slurm_cgroup_conf.min_kmem_space,
-	      set_swappiness ? slurm_cgroup_conf.memory_swappiness : 0,
-	      set_swappiness ? "set" : "unset");
+	      slurm_cgroup_conf.min_kmem_space);
 
         /*
          *  Warning: OOM Killer must be disabled for slurmstepd
@@ -231,7 +219,7 @@ static uint64_t kmem_limit_in_bytes(uint64_t mlb)
 	return allowed_kmem_space;
 }
 
-static int _memcg_initialize(stepd_step_rec_t *job, uint64_t mem_limit,
+static int _memcg_initialize(stepd_step_rec_t *step, uint64_t mem_limit,
 			     bool is_step)
 {
 	uint64_t mlb = mem_limit_in_bytes(mem_limit, true);
@@ -249,7 +237,7 @@ static int _memcg_initialize(stepd_step_rec_t *job, uint64_t mem_limit,
 		mlb_soft = mlb;
 	}
 
-	memset(&limits, 0, sizeof(limits));
+	cgroup_init_limits(&limits);
 
 	/*
 	 * When RAM space has not to be constrained and we are here, it means
@@ -263,31 +251,35 @@ static int _memcg_initialize(stepd_step_rec_t *job, uint64_t mem_limit,
 	limits.soft_limit_in_bytes = mlb_soft;
 	limits.kmem_limit_in_bytes = NO_VAL64;
 	limits.memsw_limit_in_bytes = NO_VAL64;
+	limits.swappiness = NO_VAL64;
 
 	if (constrain_kmem_space)
 		limits.kmem_limit_in_bytes = kmem_limit_in_bytes(mlb);
 
 	/* This limit has to be set only if ConstrainSwapSpace is set to yes. */
 	if (constrain_swap_space) {
+		limits.swappiness = slurm_cgroup_conf.memory_swappiness;
 		limits.memsw_limit_in_bytes = mls;
-		info ("%s: alloc=%luMB mem.limit=%luMB "
-		      "memsw.limit=%luMB", is_step ? "step" : "job",
-		      (unsigned long) mem_limit,
-		      (unsigned long) mlb/(1024*1024),
-		      (unsigned long) mls/(1024*1024));
+		info("%s: alloc=%"PRIu64"MB mem.limit=%"PRIu64"MB "
+		     "memsw.limit=%"PRIu64"MB job_swappiness=%"PRIu64,
+		     is_step ? "step" : "job",
+		     mem_limit,
+		     mlb/(1024*1024),
+		     mls/(1024*1024),
+		     limits.swappiness);
 	} else {
-		info ("%s: alloc=%luMB mem.limit=%luMB "
-		      "memsw.limit=unlimited", is_step ? "step" : "job",
-		      (unsigned long) mem_limit,
-		      (unsigned long) mlb/(1024*1024));
+		info("%s: alloc=%"PRIu64"MB mem.limit=%"PRIu64"MB "
+		     "memsw.limit=unlimited", is_step ? "step" : "job",
+		     mem_limit,
+		     mlb/(1024*1024));
 	}
 
 	if (!is_step) {
-		if (cgroup_g_job_constrain_set(CG_MEMORY, job, &limits)
+		if (cgroup_g_constrain_set(CG_MEMORY, CG_LEVEL_JOB, &limits)
 		    != SLURM_SUCCESS)
 			return SLURM_ERROR;
 	} else {
-		if (cgroup_g_step_constrain_set(CG_MEMORY, job, &limits)
+		if (cgroup_g_constrain_set(CG_MEMORY, CG_LEVEL_STEP, &limits)
 		    != SLURM_SUCCESS)
 			return SLURM_ERROR;
 	}
@@ -295,24 +287,28 @@ static int _memcg_initialize(stepd_step_rec_t *job, uint64_t mem_limit,
 	return SLURM_SUCCESS;
 }
 
-extern int task_cgroup_memory_create(stepd_step_rec_t *job)
+extern int task_cgroup_memory_create(stepd_step_rec_t *step)
 {
-	if (cgroup_g_step_create(CG_MEMORY, job) != SLURM_SUCCESS)
+	pid_t pid;
+
+	if (cgroup_g_step_create(CG_MEMORY, step) != SLURM_SUCCESS)
 		return SLURM_ERROR;
 
 	/* Set the associated memory limits for the job and for the step. */
-	if (_memcg_initialize(job, job->job_mem, false) != SLURM_SUCCESS)
+	if (_memcg_initialize(step, step->job_mem, false) != SLURM_SUCCESS)
 		return SLURM_ERROR;
-	if (_memcg_initialize(job, job->step_mem, true) != SLURM_SUCCESS)
+	if (_memcg_initialize(step, step->step_mem, true) != SLURM_SUCCESS)
 		return SLURM_ERROR;
 
 	if (cgroup_g_step_start_oom_mgr() == SLURM_SUCCESS)
 		oom_mgr_started = true;
 
-	return SLURM_SUCCESS;
+	/* Attach the slurmstepd to the step memory cgroup. */
+	pid = getpid();
+	return cgroup_g_step_addto(CG_MEMORY, &pid, 1);
 }
 
-extern int task_cgroup_memory_check_oom(stepd_step_rec_t *job)
+extern int task_cgroup_memory_check_oom(stepd_step_rec_t *step)
 {
 	cgroup_oom_t *results;
 	int rc = SLURM_SUCCESS;
@@ -320,7 +316,7 @@ extern int task_cgroup_memory_check_oom(stepd_step_rec_t *job)
 	if (!oom_mgr_started)
 		return SLURM_SUCCESS;
 
-	results = cgroup_g_step_stop_oom_mgr(job);
+	results = cgroup_g_step_stop_oom_mgr(step);
 
 	if (results == NULL)
 		return SLURM_ERROR;
@@ -331,27 +327,29 @@ extern int task_cgroup_memory_check_oom(stepd_step_rec_t *job)
 		 * limit has reached the value in memory.memsw.limit_in_bytes.
 		 */
 		info("%ps hit memory+swap limit at least once during execution. This may or may not result in some failure.",
-		     &job->step_id);
+		     &step->step_id);
 	} else if (results->step_mem_failcnt > 0) {
 		/*
 		 * reports the number of times that the memory limit has reached
 		 * the value set in memory.limit_in_bytes.
 		 */
 		info("%ps hit memory limit at least once during execution. This may or may not result in some failure.",
-		     &job->step_id);
+		     &step->step_id);
 	}
 
 	if (results->job_memsw_failcnt > 0) {
 		info("%ps hit memory+swap limit at least once during execution. This may or may not result in some failure.",
-		     &job->step_id);
+		     &step->step_id);
 	} else if (results->job_mem_failcnt > 0) {
 		info("%ps hit memory limit at least once during execution. This may or may not result in some failure.",
-		     &job->step_id);
+		     &step->step_id);
 	}
 
 	if (results->oom_kill_cnt) {
-		error("Detected %"PRIu64" oom-kill event(s) in %ps. Some of your processes may have been killed by the cgroup out-of-memory handler.",
-		      results->oom_kill_cnt, &job->step_id);
+		error("Detected %"PRIu64" oom_kill event%s in %ps. Some of the step tasks have been OOM Killed.",
+		      results->oom_kill_cnt,
+		      (results->oom_kill_cnt == 1) ? "" : "s" ,
+		      &step->step_id);
 		rc = ENOMEM;
 	}
 
@@ -360,7 +358,14 @@ extern int task_cgroup_memory_check_oom(stepd_step_rec_t *job)
 	return rc;
 }
 
-extern int task_cgroup_memory_add_pid(pid_t pid)
+extern int task_cgroup_memory_add_pid(stepd_step_rec_t *step, pid_t pid,
+				      uint32_t taskid)
 {
+	return cgroup_g_task_addto(CG_MEMORY, step, pid, taskid);
+}
+
+extern int task_cgroup_memory_add_extern_pid(pid_t pid)
+{
+	/* Only in the extern step we will not create specific tasks */
 	return cgroup_g_step_addto(CG_MEMORY, &pid, 1);
 }
