@@ -4,5 +4,9 @@ sacctmgr-increase-buffer
 pidfile-path
 rpath
 miscellanea-manpages
-use-hdf5-18-api
 retry-getaddrinfo
+set_default_cgroup_basedir
+fix-spelling-error
+force-nvml
+CVE-2023-41914
+CVE-2023-49933-49935-49936-49937-49938
