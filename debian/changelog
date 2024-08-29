@@ -1,3 +1,9 @@
+slurm-wlm (22.05.8-4+deb12u2deepin1) unstable; urgency=medium
+
+  * update symbols.
+
+ -- LiChengGang <lichenggang@uniontech.com>  Thu, 29 Aug 2024 15:59:44 +0800
+
 slurm-wlm (22.05.8-4+deb12u2) bookworm-security; urgency=medium
 
   * Fix CVE-2023-49933, CVE-2023-49935, CVE-2023-49936, CVE-2023-49937,
